@@ -9,12 +9,6 @@ Created on Fri Mar 31 13:52:34 2023
 
 # # How to use PyTorch LSTMs for time series regression
 
-# # Data
-
-# 1. Download the data from the URLs listed in the docstring in `preprocess_data.py`.
-# 2. Run the `preprocess_data.py` script to compile the individual sensors PM2.5 data into
-#    a single DataFrame.
-
 ''' This version includes input into the LSTM and a connected LSTM STATE by splitting the ensembles for the two states to capture corroleation between h and c 
 
 IMPORTANT: the input strictly does not include the target of the dataset as that would influence the covariance output
