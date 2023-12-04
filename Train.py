@@ -336,7 +336,7 @@ def train_model(data_loader, model, Ens,loss_function, num_epochs,optimizer,volu
             plt.xlabel('Epochs')
             plt.ylabel('Avg metrics')
             plt.legend(loc='upper left')
-            plt.savefig('./Distributed_results/avg_like.png')
+            plt.savefig('./Distributed_results/avg_loss.png')
             
         comm.Barrier()
         
