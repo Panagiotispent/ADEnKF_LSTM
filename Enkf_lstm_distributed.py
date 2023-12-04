@@ -9,6 +9,12 @@ Created on Fri Mar 31 13:52:34 2023
 
 # # How to use PyTorch LSTMs for time series regression
 
+# # Data
+
+# 1. Download the data from the URLs listed in the docstring in `preprocess_data.py`.
+# 2. Run the `preprocess_data.py` script to compile the individual sensors PM2.5 data into
+#    a single DataFrame.
+
 ''' This version includes input into the LSTM and a connected LSTM STATE by splitting the ensembles for the two states to capture corroleation between h and c 
 
 IMPORTANT: the input strictly does not include the target of the dataset as that would influence the covariance output
@@ -21,90 +27,118 @@ os.environ["KMP_DUPLICATE_LIB_OK"]="TRUE"
 import warnings
 warnings.filterwarnings('ignore')
 
-from torch import nn
 import torch
-
-from mpi4py import MPI
-
-
-
 # Set the number of threads that can be activated by torch
 torch.set_num_threads(1)
 # print('Num_threads:',torch.get_num_threads())
 
+import argparse
 
+from torch import nn
+from mpi4py import MPI
 
 from Prep_data import get_dataloaders
 from EnKF import Init_model
 from Train import init_optimiser,train_model
 
-if __name__ == '__main__': #????
-    comm = MPI.COMM_WORLD
-    
-    Ens = 10 # per process 
-    
-    # Pre-process and initialise everything in one MPI process
-    if comm.Get_rank() == 0:
-        Datafile = './Data/nasdaq100_padding.csv'
-        fraction = 100 # data_volume/ {fraction}
-        target = ['NDX']
-        forecast_lead = 1
-        
-        batch_size = 32 # Amount of data iterated each optimisation # What the LSTM sees before optimising once
-        sequence_length = 6 # learn for {sq_leng} then predict / 6 time-steps # LSTM window
-        
-        # train_loader, eval_loader,features,target, target_mean, target_stdev,volume
-        dataset = get_dataloaders(Datafile,target,fraction, forecast_lead, batch_size, sequence_length) 
-        
-        # # The model and learning algorithm
-         
-        num_hidden_units = 32
-        
-        ''' Constrained variables
-        This is the std, that becomes the variance later torch.square(noise) to then eliminate the possibility of becoming negative during sampling 
-        if not when training enough this produces nan
-        '''
-        r_proposed = 1.0
-        q_proposed = 2.0
-        e_proposed = 2.0
-        
-        
-        model = Init_model(dataset.get('features'),dataset.get('target'),num_hidden_units, r_proposed, q_proposed, e_proposed) # EnKF_LSTM model
-        
-        # Optimiser lr 
-        learning_rate =1e-3 # 0.001
-        
-        optimizer = init_optimiser(model.parameters(),learning_rate)
-    
-        # Loss function for comparing
-        loss_function = nn.MSELoss()
+parser = argparse.ArgumentParser('ADEnKF_LSTM')
+parser.add_argument('-dataset', default='nasdaq100_padding')
 
-        # Send everything needed in the other MPI proceses
-        sendbuf = (dataset.get('train_loader'),model,loss_function,optimizer,dataset.get('volume')) #models F/H need to be removed at somepoint but they are hardcoded for now
+parser.add_argument('-Ens-num', type=int, default=10)
+parser.add_argument('-fraction', type=int, default=100)
+parser.add_argument('-lead', type=int, default=1)
+parser.add_argument('-num-epochs', type=int, default=150)
+parser.add_argument('-batch-size', type=int, default=32)
+parser.add_argument('-sequence-length', type=int, default=6)
+parser.add_argument('-num-hidden-units', type=int, default=32)
+parser.add_argument('-r', type=float, default=1.0)
+parser.add_argument('-q', type=float, default=2.0)
+parser.add_argument('-e', type=float, default=2.0)
+parser.add_argument('-learning-rate', type=float, default=1e-3)
+
+
+
+## set default= True to train or test within spyder
+main_command = parser.add_mutually_exclusive_group(required=False)
+main_command.add_argument('--test', action='store_false', dest='train',default=False)   
+main_command.add_argument('--train', action='store_true',default =True)
+
+
+if __name__ == '__main__': #????
+    args = parser.parse_args()
+    
+    if args.train:
+        print('Train:',args.train)
+        comm = MPI.COMM_WORLD
         
-    else:
-        # empty stuff of ranks!=0, to populate with bcast from rank 0 
-        train_loader = []
-        model = []
-        loss_function = []
-        optimizer = []
-        volume = []
-        sendbuf = []
+        Ens = args.Ens_num # per process 
         
-    
-    # # bcast to every process / 'b' can brocast python objects B has restrictions but is faster
-    # comm.Barrier()
+        # Pre-process and initialise everything in one MPI process
+        if comm.Get_rank() == 0:
+            Datafile = './Data/nasdaq100_padding.csv'
+            fraction = args.fraction # data_volume/ {fraction}
+            target = ['NDX']
+            forecast_lead = args.lead
+            
+            batch_size = args.batch_size # Amount of data iterated each optimisation # What the LSTM sees before optimising once
+            sequence_length = args.sequence_length # learn for {sq_leng} then predict / 6 time-steps # LSTM window
+            
+            # train_loader, eval_loader,features,target, target_mean, target_stdev,volume
+            dataset = get_dataloaders(Datafile,target,fraction, forecast_lead, batch_size, sequence_length) 
+            
+            # # The model and learning algorithm
+             
+            num_hidden_units = args.num_hidden_units
+            
+            ''' Constrained variables
+            This is the std, that becomes the variance later torch.square(noise) to then eliminate the possibility of becoming negative during sampling 
+            if not when training enough this produces nan
+            '''
+            r_proposed = args.r
+            q_proposed = args.q
+            e_proposed = args.e
+            
+            
+            model = Init_model(dataset.get('features'),dataset.get('target'),num_hidden_units, r_proposed, q_proposed, e_proposed) # EnKF_LSTM model
+            
+            # Optimiser lr 
+            learning_rate =args.learning_rate # 0.001
+            
+            optimizer = init_optimiser(model.parameters(),learning_rate)
         
-    sendbuf = comm.bcast(sendbuf,root=0)
+            # Loss function for comparing
+            loss_function = nn.MSELoss()
     
-    comm.Barrier()
+            # Send everything needed in the other MPI proceses
+            sendbuf = (dataset.get('train_loader'),model,loss_function,optimizer,dataset.get('volume')) #models F/H need to be removed at somepoint but they are hardcoded for now
+            
+        else:
+            # empty stuff of ranks!=0, to populate with bcast from rank 0 
+            train_loader = []
+            model = []
+            loss_function = []
+            optimizer = []
+            volume = []
+            sendbuf = []
+        
+        
+        # # bcast to every process / 'b' can brocast python objects B has restrictions but is faster
+        # comm.Barrier()
+            
+        sendbuf = comm.bcast(sendbuf,root=0)
+        
+        comm.Barrier()
+        
+        train_loader,model,loss_function,optimizer,volume = sendbuf   
+        
+        num_epochs = args.num_epochs
+        
+        train_model(train_loader, model, Ens, loss_function, num_epochs, optimizer, volume)
     
-    train_loader,model,loss_function,optimizer,volume = sendbuf   
-    
-    num_epochs = 150
-    
-    train_model(train_loader, model, Ens, loss_function, num_epochs, optimizer, volume)
-    ''' 
+    elif not args.train:
+        
+        
+        ''' 
     # # # Test and predict with the best model/ only using one process for now need to think a bit before implementing in distributed
     if comm.Get_rank() == 0:
         
