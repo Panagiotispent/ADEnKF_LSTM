@@ -14,7 +14,7 @@ warnings.filterwarnings('ignore')
 import torch
 
 
-def test_model(data_loader, model, Ens,loss_function):
+def test_model(data_loader, model, Ens,loss_function,K):
 
     num_batches = len(data_loader)
     total_loss = 0
@@ -22,19 +22,19 @@ def test_model(data_loader, model, Ens,loss_function):
     model.eval()
     train = False
     
-    K = 1 # MC testing because of stochasticity
+    # MC testing because of stochasticity
     k_loss = 0
     k_like = 0
     
     #Init EnKF
     bs = data_loader.batch_size
-    n = modelF.hidden_units
+    n = model.lstm.weight_hh_l0.shape[-1] #number of features found through lstm dimensions
     N = Ens
     
     with torch.no_grad():
         for k in range(K):
     
-            state_init = model.generate_param(n,bs,modelF.num_layers,N) 
+            state_init = model.generate_param(n,bs,model.lstm.num_layers,N) 
             
             enkf_state = state_init
             
@@ -58,12 +58,12 @@ def test_model(data_loader, model, Ens,loss_function):
         
     k_loss = k_loss/K
     k_like = k_like/K
-    print(f"{K} -fold Test loss: {k_loss}")
-    print(f"{K} -fold Test likelihood: {k_like}")
+    print(f"{K} -MC Test loss: {k_loss}")
+    print(f"{K} -MC Test likelihood: {k_like}")
     return k_like # return the avg k- fold test likelihood 
 
 
-def predict(data_loader, Ens,model):
+def predict(data_loader, Ens,model,target_mean,target_stdev):
     """Just like `test_loop` function but keep track of the outputs instead of the loss
     function.
     """
@@ -77,13 +77,13 @@ def predict(data_loader, Ens,model):
     # num_batches = len(data_loader)
     #Init EnKF
     bs = data_loader.batch_size
-    n = modelF.hidden_units
+    n = model.lstm.weight_hh_l0.shape[-1] #number of features found through lstm dimensions
     N = Ens
     
     
     with torch.no_grad():
     
-        state_init = model.generate_param(n,bs,modelF.num_layers,N) 
+        state_init = model.generate_param(n,bs,model.lstm.num_layers,N) 
         
         enkf_state = state_init
         
@@ -92,7 +92,7 @@ def predict(data_loader, Ens,model):
             # if bs > X.shape[0]:
             #     break
              
-            out, cov, enkf_state,_ = model(X,y,enkf_state,train,prediction) 
+            out, cov, enkf_state,_ = model(X,y,enkf_state,train,prediction,target_mean,target_stdev) 
             # input(enkf_state[0])
             output = torch.cat((output, out), 0)
             

@@ -6,7 +6,7 @@ Created on Mon Dec  4 09:53:45 2023
 """
 import torch
 from torch import nn
-
+import sys
 from Transition_models import get_models
 
 class EnKF_LSTM(nn.Module):
@@ -406,7 +406,7 @@ class EnKF_LSTM(nn.Module):
         # print(l)
         return l
 
-    def forward(self, x,y,enkf_state,train,prediction = False):
+    def forward(self, x,y,enkf_state,train,prediction = False,target_mean='',target_stdev=''):
         uhi,Bh = enkf_state #(h_t and c_t)
         
         N = uhi.shape[-1] # number of ensembles
@@ -448,6 +448,7 @@ class EnKF_LSTM(nn.Module):
             if prediction: 
                 ''' Unnormalise'''
                 Y_mu = Y_mu* target_stdev + target_mean
+
                 sig = sig * target_stdev
                 
                 sig = torch.Tensor([sig])

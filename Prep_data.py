@@ -7,7 +7,7 @@ Created on Mon Dec  4 09:51:09 2023
 
 import torch
 from torch.utils.data import Dataset
-from torch.utils.data import DataLoader
+
 
 import pandas as pd
 
@@ -68,13 +68,13 @@ def get_dataloaders(Datafile,target,fraction = 1, forecast_lead = 1, batch_size 
     print("Test set fraction:", len(df_eval) / len(df))
    
     # To normalise the data
-    target_mean = df_train[target].mean()
-    target_stdev = df_train[target].std()
+    target_mean = float(df_train[target].mean())
+    target_stdev = float(df_train[target].std())
     
     # Normalise the data 
     for c in df_train.columns:
-        mean = df_train[c].mean()
-        stdev = df_train[c].std()
+        mean = float(df_train[c].mean())
+        stdev = float(df_train[c].std())
     
         df_train[c] = (df_train[c] - mean) / stdev
         df_eval[c] = (df_eval[c] - mean) / stdev
@@ -108,21 +108,14 @@ def get_dataloaders(Datafile,target,fraction = 1, forecast_lead = 1, batch_size 
         sequence_length=sequence_length
     )
     
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=False) # Do not shuffle a time series
-    eval_loader = DataLoader(eval_dataset, batch_size=batch_size, shuffle=False)
-    
-    X, Y = next(iter(train_loader))
 
-    print("Features shape:", X.shape)
-    print("Target shape:", Y.shape)
-    
-    dataset = {'train_loader': train_loader,
-                   'eval_loader': eval_loader,
-                   'features': features,
-                   'target': target,
-                   'target_mean': target_mean,
-                   'target_stdev': target_stdev,
-                   'volume':volume
+    dataset = {'train_dataset': train_dataset,
+                'eval_dataset': eval_dataset,
+                'features': features,
+                'target': target,
+                'target_mean': target_mean,
+                'target_stdev': target_stdev,
+                'volume':volume
                    }
     
     return dataset
