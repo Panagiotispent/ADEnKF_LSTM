@@ -39,6 +39,11 @@ from torch import nn
 from mpi4py import MPI
 import sys
 import numpy as np
+import pandas as pd
+import plotly.graph_objects as go
+import plotly.io as pio
+import plotly.express as px
+
 
 from Prep_data import get_dataloaders
 from EnKF import Init_model
@@ -52,19 +57,21 @@ parser.add_argument('-target', default='NDX')
 parser.add_argument('-Ens-num', type=int, default=10)
 parser.add_argument('-fraction', type=int, default=100)
 parser.add_argument('-lead', type=int, default=1)
-parser.add_argument('-num-epochs', type=int, default=150)
+parser.add_argument('-num-epochs', type=int, default=300)
 parser.add_argument('-batch-size', type=int, default=32)
+parser.add_argument('-num-hidden-units', type=int, default=64)
 parser.add_argument('-sequence-length', type=int, default=6)
-parser.add_argument('-num-hidden-units', type=int, default=32)
+parser.add_argument('-dropout', type=float, default=0.2)
+
 parser.add_argument('-r', type=float, default=1.0)
 parser.add_argument('-q', type=float, default=2.0)
 parser.add_argument('-e', type=float, default=2.0)
 parser.add_argument('-learning-rate', type=float, default=1e-3)
-parser.add_argument('-MC-tests', type=int, default=1)
+parser.add_argument('-MC-tests', type=int, default=5)
 
 
 ## set default= True to train or test within spyder
-main_command = parser.add_mutually_exclusive_group(required=False)
+main_command = parser.add_mutually_exclusive_group(required=True)
 main_command.add_argument('-test', action='store_false', dest='train',default=False)   
 main_command.add_argument('-train', action='store_true',default =True)
 
@@ -81,7 +88,7 @@ if __name__ == '__main__': #????
     if comm.Get_rank() == 0:
         Datafile = './Data/nasdaq100_padding.csv'
         fraction = args.fraction # data_volume/ {fraction}
-        target = ['NDX']
+        target = args.target
         forecast_lead = args.lead
         
         batch_size = args.batch_size # Amount of data iterated each optimisation # What the LSTM sees before optimising once
@@ -111,7 +118,7 @@ if __name__ == '__main__': #????
         e_proposed = args.e
         
         
-        model = Init_model(dataset.get('features'),dataset.get('target'),num_hidden_units, r_proposed, q_proposed, e_proposed) # EnKF_LSTM model
+        model = Init_model(dataset.get('features'),dataset.get('target'),num_hidden_units, args.dropout,r_proposed, q_proposed, e_proposed) # EnKF_LSTM model
         
         # Optimiser lr 
         learning_rate =args.learning_rate # 0.001
@@ -146,15 +153,17 @@ if __name__ == '__main__': #????
     num_epochs = args.num_epochs
     
     if args.train:
-        print('Train:',args.train)
-    
+        if comm.Get_rank() == 0:
+            print('Train:',args.train)
+            sys.stdout.flush()
+            
         train_model(train_loader, model, Ens, loss_function, num_epochs, optimizer, volume)
     
     elif not args.train:
         
         # # # Test and predict with the best model/ only using one process for now need to think a bit before implementing in distributed
         if comm.Get_rank() == 0:
-            print('If Testing use mpiexec -n 1 to not waste resources')
+            print('\nWhen Testing use mpiexec -n 1 to not waste resources\n')
             sys.stdout.flush()
             #Load the best model's parameters from training
             # print('loading best model...')
@@ -195,71 +204,73 @@ if __name__ == '__main__': #????
                     total_train_cov  += train_cov
                     total_val_cov += val_cov
                     
-                    
-            # df_train[ystar_col] = total_train_pred /K
-            # df_train[ystar_col_std] = (np.sqrt(total_train_cov))/K # save the sd
-            # df_eval[ystar_col] = total_val_pred/K   
-            # df_eval[ystar_col_std] = (np.sqrt(total_val_cov))/K 
+            df_train =pd.DataFrame(dataset['train_dataset'].y,columns=[target])   
+            df_eval =pd.DataFrame(dataset['eval_dataset'].y,columns=[target])
+            
+            df_train[ystar_col] = total_train_pred /K
+            df_train[ystar_col_std] = (np.sqrt(total_train_cov))/K # save the sd
+            df_eval[ystar_col] = total_val_pred/K   
+            df_eval[ystar_col_std] = (np.sqrt(total_val_cov))/K 
               
-            # df_out = pd.concat((df_train, df_eval))[[target, ystar_col,ystar_col_std]]
-            # df_out.index = df_train.index.append(df_eval.index)
+            df_out = pd.concat((df_train, df_eval))[[target, ystar_col,ystar_col_std]]
+            df_out = df_out.reset_index(drop=True)
             
             
-            # # unnormalise target for plotting
-            # df_out[target] = df_out[target] * target_stdev + target_mean
-            # print(df_out)
+            # unnormalise target for plotting
+            df_out[target] = df_out[target] * dataset.get('target_stdev') + dataset.get('target_mean')
+            print(df_out)
             
-            # df_out.to_csv('./Distributed_results/Predictions'+volume+'.csv')
+            df_out.to_csv('./Distributed_results/Predictions'+str(volume)+'.csv')
             
-            # # Figures
-            # pio.templates.default = "plotly_white"
+            # Figures
+            pio.templates.default = "plotly_white"
             
-            # plot_template = dict(
-            #     layout=go.Layout({
-            #         "font_size": 18,
-            #         "xaxis_title_font_size": 24,
-            #         "yaxis_title_font_size": 24})
-            # )
-            # # With Estimations (mean and Standrad deviation)  
-            # fig = go.Figure(data=go.Scatter(
-            #         x=df_out.index,
-            #         y = df_out[ystar_col],
-            #         error_y=dict(
-            #             type='data', # value of error bar given in data coordinates
-            #             array=df_out[ystar_col_std],
-            #             visible=True),
-            #         name="Prediction"
-            #     )   )
+            plot_template = dict(
+                layout=go.Layout({
+                    "font_size": 18,
+                    "xaxis_title_font_size": 24,
+                    "yaxis_title_font_size": 24})
+            )
+            # With Estimations (mean and Standrad deviation)  
+            fig = go.Figure(data=go.Scatter(
+                    x=df_out.index,
+                    y = df_out[ystar_col],
+                    error_y=dict(
+                        type='data', # value of error bar given in data coordinates
+                        array=df_out[ystar_col_std],
+                        visible=True),
+                    name="Prediction"
+                )   )
             
-            # fig.add_trace(go.Scatter(x=df_out.index,y=df_out[target],name="Ground truth"))
-            # fig.add_vline(x=test_start, line_width=4, line_dash="dash")
-            # fig.update_layout(
-            #   template=plot_template, legend=dict(orientation='h', y=1.02, title_text="")
-            # )
+            fig.add_trace(go.Scatter(x=df_out.index,y=df_out[target],name="Ground truth"))
+            fig.add_vline(x=df_train.index[-1], line_width=4, line_dash="dash")
+            fig.update_layout(
+              template=plot_template, legend=dict(orientation='h', y=1.02, title_text="")
+            )
             
-            # fig.write_html("./Distributed_results/NASDAQenkf_fixedH_deterministicEnsemble.html")
+            fig.write_html("./Distributed_results/NASDAQenkf_fixedH_deterministicEnsemble.html")
             
-            # # With Predictions only
-            # df_out_mean =df_out.drop('Model forecast std',axis=1) 
+            # With Predictions only
+            df_out_mean =df_out.drop('Model forecast std',axis=1) 
             
-            # fig = px.line(df_out_mean, labels={'value': "NDX", 'created_at': 'Date'})
-            # fig.add_vline(x=test_start, line_width=4, line_dash="dash")
-            # fig.add_annotation(xref="paper", x=0.75, yref="paper", y=0.8, text="Test set start", showarrow=False)
-            # fig.update_layout(
-            #   template=plot_template, legend=dict(orientation='h', y=1.02, title_text="")
-            # )
-            # fig.write_html("./Distributed_results/NASDAQline_fixedH_deterministicEnsemble.html")
+            fig = px.line(df_out_mean, labels={'value': "NDX", 'created_at': 'Date'})
+            fig.add_vline(x=df_train.index[-1], line_width=4, line_dash="dash")
+            fig.add_annotation(xref="paper", x=0.75, yref="paper", y=0.8, text="Test set start", showarrow=False)
+            fig.update_layout(
+              template=plot_template, legend=dict(orientation='h', y=1.02, title_text="")
+            )
+            fig.write_html("./Distributed_results/NASDAQline_fixedH_deterministicEnsemble.html")
             
             
-            # ### Distribution of the predictions and target
+            ### Distribution of the predictions and target
             
-            # fig = px.scatter(df_out, x=df_out.index, y="Model forecast",marginal_y='histogram',color_discrete_sequence=['blue'])
-            # fig.add_trace(## Add the points data[0]
-            #     px.scatter(df_out, x=df_out.index, y="close_lead_1",marginal_y='histogram',opacity=0.5,color_discrete_sequence=['red']).data[0]
-            # )
-            # fig.add_trace(## Add the histogram [1]
-            #     px.scatter(df_out, x=df_out.index, y="close_lead_1",marginal_y='histogram',opacity=0.5,color_discrete_sequence=['red']).data[1]
-            # )
+            fig = px.scatter(df_out, x=df_out.index, y=ystar_col,marginal_y='histogram',color_discrete_sequence=['blue'])
+            fig.add_trace(## Add the points data[0]
+                px.scatter(df_out, x=df_out.index, y=target,marginal_y='histogram',opacity=0.5,color_discrete_sequence=['red']).data[0]
+            )
+            fig.add_trace(## Add the histogram [1]
+                px.scatter(df_out, x=df_out.index, y=target,marginal_y='histogram',opacity=0.5,color_discrete_sequence=['red']).data[1]
+            )
             
-            # fig.write_html('./Distributed_results/results_fixedH_deterministicEnsemble.html') 
+            fig.write_html('./Distributed_results/results_fixedH_deterministicEnsemble.html') 
         

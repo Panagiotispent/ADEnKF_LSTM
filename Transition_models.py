@@ -11,7 +11,7 @@ from torch import nn
 
 # AD-EnKF F transition model
 class ModelF(nn.Module):
-    def __init__(self, features, hidden_units,layers = 2):
+    def __init__(self, features, hidden_units,layers = 2,dropout=0.2):
         super().__init__()
         self.features = features  # this is the number of features
         self.hidden_units = hidden_units
@@ -24,7 +24,7 @@ class ModelF(nn.Module):
             batch_first=True,
             num_layers=self.num_layers,
             dtype=torch.double, # for numerical stability
-            dropout= 0.2
+            dropout= dropout
             )
         
 # AD-EnKF H transition model
@@ -36,7 +36,7 @@ class ModelH(nn.Module):
         #linear Identity matrix
         # self.H = nn.Linear(in_features=self.hidden_units, out_features=1,dtype=torch.double)
 
-        self.H = torch.eye(n = self.hidden_units,m = target,requires_grad = False).type(torch.DoubleTensor)
+        self.H = torch.eye(n = self.hidden_units,m = len([target]),requires_grad = False).type(torch.DoubleTensor)
         
-def get_models(features,target,num_hidden_units):
-    return ModelF(features=len(features),hidden_units=num_hidden_units), ModelH(target = len(target),hidden_units=num_hidden_units)
+def get_models(features,target,num_hidden_units, dropout):
+    return ModelF(features=len(features),hidden_units=num_hidden_units,dropout=dropout), ModelH(target = len(target),hidden_units=num_hidden_units)

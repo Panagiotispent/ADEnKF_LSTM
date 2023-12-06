@@ -48,7 +48,7 @@ def get_dataloaders(Datafile,target,fraction = 1, forecast_lead = 1, batch_size 
     df = pd.DataFrame(df[:volume]) # working with a sub sample of data
     
     ### Important to drop the target from the input to not influence the covariance R during training
-    features = list(df.drop(target,axis=1)) 
+    features = list(df.drop([target],axis=1)) 
 
     # How far in the future should the target be
     target_forcast = f"close_lead_{forecast_lead}"

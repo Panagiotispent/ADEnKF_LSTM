@@ -13,7 +13,6 @@ warnings.filterwarnings('ignore')
 
 import torch
 
-
 def test_model(data_loader, model, Ens,loss_function,K):
 
     num_batches = len(data_loader)
@@ -23,8 +22,8 @@ def test_model(data_loader, model, Ens,loss_function,K):
     train = False
     
     # MC testing because of stochasticity
-    k_loss = 0
-    k_like = 0
+    k_loss = []
+    k_like = []
     
     #Init EnKF
     bs = data_loader.batch_size
@@ -51,16 +50,17 @@ def test_model(data_loader, model, Ens,loss_function,K):
                 total_likelihood += likelihood.item()
                 total_loss += loss.item()
                 
-        avg_loss = total_loss / num_batches
-        avg_like = total_likelihood / num_batches
-        k_loss += avg_loss
-        k_like += avg_like
+            avg_loss = total_loss / num_batches
+            avg_like = total_likelihood / num_batches
+            k_loss.append(avg_loss)
+            k_like.append(avg_like)
         
-    k_loss = k_loss/K
-    k_like = k_like/K
-    print(f"{K} -MC Test loss: {k_loss}")
-    print(f"{K} -MC Test likelihood: {k_like}")
-    return k_like # return the avg k- fold test likelihood 
+    t_k_loss= torch.Tensor(k_loss)
+    t_k_like= torch.Tensor(k_like)
+
+    print(f"{K} -MC Test loss: {torch.mean(t_k_loss):.3f} +/- {torch.std(t_k_loss):.3f}")
+    print(f"{K} -MC Test likelihood: {torch.mean(t_k_like):.3f} +/- {torch.std(t_k_like):.3f}")
+
 
 
 def predict(data_loader, Ens,model,target_mean,target_stdev):

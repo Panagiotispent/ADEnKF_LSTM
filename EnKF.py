@@ -6,7 +6,7 @@ Created on Mon Dec  4 09:53:45 2023
 """
 import torch
 from torch import nn
-import sys
+
 from Transition_models import get_models
 
 class EnKF_LSTM(nn.Module):
@@ -65,17 +65,17 @@ class EnKF_LSTM(nn.Module):
         return hid_seq, new_h, new_c 
     
     
-    # Linear layer
-    def TransitionH(self,eq,u):
-        args,noise = eq
-        ls,bs,n = u.shape # here size is the batch of the size of the LSTM output(y)
-        # Constrained positive variables as above
-        noise =torch.square(noise)
-        # linear I layer
-        # z = args(u[0]).flatten() + (torch.sqrt(noise)*torch.randn(bs))
-        z = (u[0] @ args).flatten() + (torch.sqrt(noise)*torch.randn(bs))
+    # # Linear layer
+    # def TransitionH(self,eq,u):
+    #     args,noise = eq
+    #     ls,bs,n = u.shape # here size is the batch of the size of the LSTM output(y)
+    #     # Constrained positive variables as above
+    #     noise =torch.square(noise)
+    #     # linear I layer
+    #     # z = args(u[0]).flatten() + (torch.sqrt(noise)*torch.randn(bs))
+    #     z = (u[0] @ args).flatten() + (torch.sqrt(noise)*torch.randn(bs))
         
-        return z
+    #     return z
     
     # Linear layer with no noise used in likelihood and predictions
     def obs_pred(self,eq,u):
@@ -508,11 +508,11 @@ class EnKF_LSTM(nn.Module):
             # enkf_state = self.forecast_ensemble(x,uhi_filter,dynamic_model)
             return filter_out, filter_cov ,enkf_state, l
 
-def Init_model(features,target,num_hidden_units = 32,r_proposed = 1.0, q_proposed = 2.0, e_proposed = 2.0):
+def Init_model(features,target,num_hidden_units = 32,dropout=0.2, r_proposed = 1.0, q_proposed = 2.0, e_proposed = 2.0):
     
-    modelF,modelH = get_models(features,target,num_hidden_units)
+    modelF,modelH = get_models(features, target, num_hidden_units, dropout)
     
-    model = EnKF_LSTM(modelF,modelH,diag_q =q_proposed , diag_r= r_proposed, diag_e = e_proposed)
+    model = EnKF_LSTM(modelF, modelH, diag_q =q_proposed , diag_r= r_proposed, diag_e = e_proposed)
     
     return model    
         
