@@ -53,26 +53,26 @@ from Test import test_model,predict
 
 parser = argparse.ArgumentParser('ADEnKF_LSTM')
 parser.add_argument('-dataset', default='nasdaq100_padding')
-parser.add_argument('-target', default='NDX')
-parser.add_argument('-Ens-num', type=int, default=10)
+parser.add_argument('-t',metavar='-target', default='NDX')
+parser.add_argument('-N', type=int, metavar='-Ens-num', default=100)
 parser.add_argument('-fraction', type=int, default=100)
 parser.add_argument('-lead', type=int, default=1)
-parser.add_argument('-num-epochs', type=int, default=300)
-parser.add_argument('-batch-size', type=int, default=32)
-parser.add_argument('-num-hidden-units', type=int, default=64)
+parser.add_argument('-epochs', type=int, metavar='-num-epochs', default=200)
+parser.add_argument('-bs', type=int, metavar='-batch-size',default=32)
+parser.add_argument('-n', type=int, metavar='-num-hidden-units' ,default=64)
 parser.add_argument('-sequence-length', type=int, default=6)
-parser.add_argument('-dropout', type=float, default=0.2)
+parser.add_argument('-d', type=float, metavar='-dropout',default=0.0)
 
 parser.add_argument('-r', type=float, default=1.0)
 parser.add_argument('-q', type=float, default=2.0)
 parser.add_argument('-e', type=float, default=2.0)
-parser.add_argument('-learning-rate', type=float, default=1e-3)
-parser.add_argument('-MC-tests', type=int, default=5)
+parser.add_argument('-lr', metavar='-learning-rate',type=float, default=1e-3)
+parser.add_argument('-mc', type=int, metavar='-MC-tests',default=5)
 
 
 ## set default= True to train or test within spyder
-main_command = parser.add_mutually_exclusive_group(required=True)
-main_command.add_argument('-test', action='store_false', dest='train',default=False)   
+main_command = parser.add_mutually_exclusive_group(required=False)
+# main_command.add_argument('-test', action='store_false', dest='train',default=False)   
 main_command.add_argument('-train', action='store_true',default =True)
 
 
@@ -82,16 +82,16 @@ if __name__ == '__main__': #????
     
     comm = MPI.COMM_WORLD
     
-    Ens = args.Ens_num # per process 
+    Ens = args.N # per process 
     
     # Pre-process and initialise everything in one MPI process
     if comm.Get_rank() == 0:
         Datafile = './Data/nasdaq100_padding.csv'
         fraction = args.fraction # data_volume/ {fraction}
-        target = args.target
+        target = args.t
         forecast_lead = args.lead
         
-        batch_size = args.batch_size # Amount of data iterated each optimisation # What the LSTM sees before optimising once
+        batch_size = args.bs # Amount of data iterated each optimisation # What the LSTM sees before optimising once
         sequence_length = args.sequence_length # learn for {sq_leng} then predict / 6 time-steps # LSTM window
         
         # train_loader, eval_loader,features,target, target_mean, target_stdev,volume
@@ -107,7 +107,7 @@ if __name__ == '__main__': #????
         sys.stdout.flush()
         # # The model and learning algorithm
          
-        num_hidden_units = args.num_hidden_units
+        num_hidden_units = args.n
         
         ''' Constrained variables
         This is the std, that becomes the variance later torch.square(noise) to then eliminate the possibility of becoming negative during sampling 
@@ -118,10 +118,10 @@ if __name__ == '__main__': #????
         e_proposed = args.e
         
         
-        model = Init_model(dataset.get('features'),dataset.get('target'),num_hidden_units, args.dropout,r_proposed, q_proposed, e_proposed) # EnKF_LSTM model
+        model = Init_model(dataset.get('features'),dataset.get('target'),num_hidden_units, args.d,r_proposed, q_proposed, e_proposed) # EnKF_LSTM model
         
         # Optimiser lr 
-        learning_rate =args.learning_rate # 0.001
+        learning_rate =args.lr # 0.001
         
         optimizer = init_optimiser(model.parameters(),learning_rate)
     
@@ -150,7 +150,7 @@ if __name__ == '__main__': #????
     
     train_loader,model,loss_function,optimizer,volume = sendbuf   
     
-    num_epochs = args.num_epochs
+    num_epochs = args.epochs
     
     if args.train:
         if comm.Get_rank() == 0:
@@ -185,8 +185,8 @@ if __name__ == '__main__': #????
             mean = dataset.get('target_mean')
             stdev = dataset.get('target_stdev')
             
-            test_model(train_loader, model, Ens, loss_function,args.MC_tests)
-            test_model(eval_loader, model, Ens, loss_function,args.MC_tests)
+            test_model(train_loader, model, Ens, loss_function,args.mc)
+            test_model(eval_loader, model, Ens, loss_function,args.mc)
             
             K = 1 # MC prediction
             # # Evaluation

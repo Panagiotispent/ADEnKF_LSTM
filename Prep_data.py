@@ -30,7 +30,7 @@ class SequenceDataset(Dataset):
         else:
             padding = self.X[0].repeat(self.sequence_length - i - 1, 1)
             x = self.X[0:(i + 1), :]
-            x = torch.cat((padding, x), 0).type(torch.DoubleTensor)
+            x = torch.cat((padding, x), 0).double()
 
         return x, self.y[i]
     def get_feature(self):

@@ -27,26 +27,21 @@ def test_model(data_loader, model, Ens,loss_function,K):
     
     #Init EnKF
     bs = data_loader.batch_size
-    n = model.lstm.weight_hh_l0.shape[-1] #number of features found through lstm dimensions
+    n = model.F.weight_hh_l0.shape[-1] #number of features found through S dimensions
     N = Ens
     
     with torch.no_grad():
         for k in range(K):
     
-            state_init = model.generate_param(n,bs,model.lstm.num_layers,N) 
+            state_init = model.generate_param(n,bs,model.F.num_layers,N) 
             
             enkf_state = state_init
             
             for s, (X, y) in enumerate(data_loader):
-                # The testing is done without batches 
-                # if bs > X.shape[0]:
-                #     break
-            
-            
                 out, cov,enkf_state, likelihood = model(X,y,enkf_state,train) 
                 
                 loss = loss_function(out, y)
-       
+
                 total_likelihood += likelihood.item()
                 total_loss += loss.item()
                 
@@ -74,28 +69,24 @@ def predict(data_loader, Ens,model,target_mean,target_stdev):
     model.eval()
     train = False
     prediction = True
-    # num_batches = len(data_loader)
+
     #Init EnKF
     bs = data_loader.batch_size
-    n = model.lstm.weight_hh_l0.shape[-1] #number of features found through lstm dimensions
+    n = model.F.weight_hh_l0.shape[-1] #number of features found through lstm dimensions
     N = Ens
     
     
     with torch.no_grad():
     
-        state_init = model.generate_param(n,bs,model.lstm.num_layers,N) 
+        state_init = model.generate_param(n,bs,model.F.num_layers,N) 
         
         enkf_state = state_init
         
         for s, (X, y) in enumerate(data_loader):
-            
-            # if bs > X.shape[0]:
-            #     break
-             
+
             out, cov, enkf_state,_ = model(X,y,enkf_state,train,prediction,target_mean,target_stdev) 
-            # input(enkf_state[0])
+
             output = torch.cat((output, out), 0)
-            
             out_cov = torch.cat((out_cov, cov), 0)
-            # print(out_cov)
+
     return output.numpy(),out_cov
