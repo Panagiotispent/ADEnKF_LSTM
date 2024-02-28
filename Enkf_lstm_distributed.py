@@ -35,7 +35,7 @@ torch.set_num_threads(1)
 
 import argparse
 
-from torch import nn
+
 from mpi4py import MPI
 import sys
 import numpy as np
@@ -46,27 +46,41 @@ import plotly.express as px
 
 
 from Prep_data import get_dataloaders
-from EnKF import Init_model
+
+
+# from EnKF import Init_model
+from PF import Init_model
+
 from Train import init_optimiser,train_model
 from Test import test_model,predict
 
 
 parser = argparse.ArgumentParser('ADEnKF_LSTM')
-parser.add_argument('-dataset', default='nasdaq100_padding')
-parser.add_argument('-t',metavar='-target', default='NDX')
-parser.add_argument('-N', type=int, metavar='-Ens-num', default=100)
-parser.add_argument('-fraction', type=int, default=100)
+parser.add_argument('-dataset', default='nasdaq100_padding')# nasdaq100_padding, Pollution, NA_1990_2002_Monthly
+parser.add_argument('-t',metavar='-target', default='NDX') # NDX, pollution, TMP
+parser.add_argument('-fraction', type=int, default=1000)
+parser.add_argument('-bs', type=int, metavar='-batch-size',default=60) # 120 (minutes), 24 (hours), 12 (months)
+parser.add_argument('-sequence-length', type=int, default=12) # 60 (minutes), 6 (hours), 3 (months)
+
+parser.add_argument('-ms', type=float, metavar='-missing-values',default=False)
+parser.add_argument('-aff', type=float, metavar='-affected-missing-data',default=0.0)
+parser.add_argument('-block', type=float, metavar='-percentage-of-missing-data',default=0.0)
+
+parser.add_argument('-feature_fraction', type=int, default=1)
 parser.add_argument('-lead', type=int, default=1)
 parser.add_argument('-epochs', type=int, metavar='-num-epochs', default=200)
-parser.add_argument('-bs', type=int, metavar='-batch-size',default=32)
-parser.add_argument('-n', type=int, metavar='-num-hidden-units' ,default=64)
-parser.add_argument('-sequence-length', type=int, default=6)
+parser.add_argument('-lr', metavar='-learning-rate',type=float, default=1e-3)
+
+parser.add_argument('-nhu', type=int, metavar='-num-hidden-units' ,default=32)
+parser.add_argument('-layers', type=int, metavar='-LSTM-layers' ,default=2)
+
 parser.add_argument('-d', type=float, metavar='-dropout',default=0.0)
 
+parser.add_argument('-EN', type=int, metavar='-Ens-num', default=100)
 parser.add_argument('-r', type=float, default=1.0)
-parser.add_argument('-q', type=float, default=2.0)
+parser.add_argument('-q', type=float, default=2.0) 
 parser.add_argument('-e', type=float, default=2.0)
-parser.add_argument('-lr', metavar='-learning-rate',type=float, default=1e-3)
+
 parser.add_argument('-mc', type=int, metavar='-MC-tests',default=5)
 
 
@@ -79,36 +93,45 @@ main_command.add_argument('-train', action='store_true',default =True)
 if __name__ == '__main__': #????
     args = parser.parse_args()
     
-    
     comm = MPI.COMM_WORLD
     
-    Ens = args.N # per process 
+    Ens = args.EN # per process 
     
     # Pre-process and initialise everything in one MPI process
     if comm.Get_rank() == 0:
-        Datafile = './Data/nasdaq100_padding.csv'
+        Datafile = './Data/'+str(args.dataset)+'.csv'
         fraction = args.fraction # data_volume/ {fraction}
+        features_fr = args.feature_fraction
         target = args.t
         forecast_lead = args.lead
         
         batch_size = args.bs # Amount of data iterated each optimisation # What the LSTM sees before optimising once
         sequence_length = args.sequence_length # learn for {sq_leng} then predict / 6 time-steps # LSTM window
         
+        miss_values = args.ms
+        affected_data = args.aff
+        perc_missing = args.block
+        
+        
         # train_loader, eval_loader,features,target, target_mean, target_stdev,volume
-        dataset = get_dataloaders(Datafile,target,fraction, forecast_lead, batch_size, sequence_length) 
+        dataset = get_dataloaders(Datafile, target, fraction, features_fr, forecast_lead, batch_size, sequence_length,miss_values,affected_data,perc_missing) 
+        
+        #Create results folder
+        savefile = f'./Distributed_results/{args.dataset}/{str(dataset.get("volume"))}/{str(dataset.get("num_features"))}/{str(args.nhu)}/{str(args.layers)}/{str(args.bs)}/{str(args.sequence_length)}/'
+        if not os.path.exists(f'{savefile}/img'):
+            os.makedirs(f'{savefile}/img')
         
         train_loader = DataLoader(dataset.get('train_dataset'), batch_size=batch_size, shuffle=False) # Do not shuffle a time series
         eval_loader = DataLoader(dataset.get('eval_dataset'), batch_size=batch_size, shuffle=False)
         
         X, Y = next(iter(train_loader))
-
         print("Features shape:", X.shape)
         print("Target shape:", Y.shape)
         sys.stdout.flush()
         # # The model and learning algorithm
-         
-        num_hidden_units = args.n
-        
+
+        num_hidden_units = args.nhu
+        num_layers = args.layers
         ''' Constrained variables
         This is the std, that becomes the variance later torch.square(noise) to then eliminate the possibility of becoming negative during sampling 
         if not when training enough this produces nan
@@ -118,26 +141,23 @@ if __name__ == '__main__': #????
         e_proposed = args.e
         
         
-        model = Init_model(dataset.get('features'),dataset.get('target'),num_hidden_units, args.d,r_proposed, q_proposed, e_proposed) # EnKF_LSTM model
+        model = Init_model(dataset.get('features'),dataset.get('target'), num_hidden_units, num_layers, args.d,r_proposed, q_proposed, e_proposed) # EnKF_LSTM model
         
         # Optimiser lr 
         learning_rate =args.lr # 0.001
         
         optimizer = init_optimiser(model.parameters(),learning_rate)
     
-        # Loss function for comparing
-        loss_function = nn.MSELoss()
 
         # Send everything needed in the other MPI proceses
-        sendbuf = (train_loader,model,loss_function,optimizer,dataset.get('volume')) #models F/H need to be removed at somepoint but they are hardcoded for now
+        sendbuf = (train_loader,model,optimizer,savefile) #models F/H need to be removed at somepoint but they are hardcoded for now
         
     else:
         # empty stuff of ranks!=0, to populate with bcast from rank 0 
         train_loader = []
         model = []
-        loss_function = []
         optimizer = []
-        volume = []
+        save_name = []
         sendbuf = []
     
     
@@ -148,129 +168,154 @@ if __name__ == '__main__': #????
     
     comm.Barrier()
     
-    train_loader,model,loss_function,optimizer,volume = sendbuf   
+    train_loader,model,optimizer,save_name = sendbuf   
     
     num_epochs = args.epochs
+     
     
-    if args.train:
-        if comm.Get_rank() == 0:
-            print('Train:',args.train)
-            sys.stdout.flush()
-            
-        train_model(train_loader, model, Ens, loss_function, num_epochs, optimizer, volume)
-    
-    elif not args.train:
+    # if args.train:
+    if comm.Get_rank() == 0:
+        print('Train:',args.train)
+        sys.stdout.flush()
         
-        # # # Test and predict with the best model/ only using one process for now need to think a bit before implementing in distributed
-        if comm.Get_rank() == 0:
-            print('\nWhen Testing use mpiexec -n 1 to not waste resources\n')
-            sys.stdout.flush()
-            #Load the best model's parameters from training
-            # print('loading best model...')
-            state = torch.load('./Distributed_results/best_trainlikelihood_model_'+str(volume)+'.pt') ### OR best_trainlikelihood_model_
-            model.load_state_dict(state)
-            
-            print('r_proposed: ',np.square(model.r.item())) # print variance
-            print('q_proposed: ',np.square(model.q.item()))
-            print('e_proposed: ',np.square(model.e.item()))
-            sys.stdout.flush()
-            
-            # ### Non batched versions of the normalised dataloaders
-            # ### NECESSARY sequential testing
-            train_loader = DataLoader(dataset.get('train_dataset'), batch_size=1, shuffle=False) # Do not shuffle a time series
-            eval_loader = DataLoader(dataset.get('eval_dataset'), batch_size=1, shuffle=False)
-            # To save predictions
-            ystar_col = "Model forecast"
-            ystar_col_std = "Model forecast std"
-            mean = dataset.get('target_mean')
-            stdev = dataset.get('target_stdev')
-            
-            test_model(train_loader, model, Ens, loss_function,args.mc)
-            test_model(eval_loader, model, Ens, loss_function,args.mc)
-            
-            K = 1 # MC prediction
-            # # Evaluation
-            for i in range(K):
+    train_model(train_loader, model, Ens, num_epochs, optimizer, save_name)
+    
+    # elif not args.train:
+    # # # Test and predict with the best model/ only using one process for now need to think a bit before implementing in distributed
+    if comm.Get_rank() == 0:
+        print('\nWhen Testing use mpiexec -n 1 to not waste resources\n')
+        sys.stdout.flush()
+        #Load the best model's parameters from training
+        # print('loading best model...')
+        state = torch.load(f'{savefile}/best_trainlikelihood_model.pt') ### OR best_trainlikelihood_model_
+        model.load_state_dict(state)
+        
+        print('r_proposed: ',np.square(model.r.item())) # print variance
+        print('q_proposed: ',np.square(model.q.item()))
+        print('e_proposed: ',np.square(model.e.item()))
+        
+        print('scaled_r_proposed: ',np.square(model.r.item()) * np.square(dataset.get('target_stdev'))) # print variance
+        print('scaled_q_proposed: ',np.square(model.q.item())* np.square(dataset.get('target_stdev')))
+        print('scaled_e_proposed: ',np.square(model.e.item())* np.square(dataset.get('target_stdev')))
+        sys.stdout.flush()
+        
+        # ### Non batched versions of the normalised dataloaders
+        # ### NECESSARY sequential testing
+        train_loader = DataLoader(dataset.get('train_dataset'), batch_size=1, shuffle=False) # Do not shuffle a time series
+        eval_loader = DataLoader(dataset.get('eval_dataset'), batch_size=1, shuffle=False)
+        # To save predictions
+        ystar_col = "Model forecast"
+        ystar_col_std = "Model forecast std"
+        mean = dataset.get('target_mean')
+        stdev = dataset.get('target_stdev')
+        
+        # test_model(train_loader, model, Ens,args.mc)
+        # test_model(eval_loader, model, Ens,args.mc)
+        
+        K = 1 # MC prediction
+        # # Evaluation
+        for i in range(K):
+            if target == 'pollution':
                 if i == 0 :
-                    total_train_pred,total_train_cov = predict(train_loader, Ens, model,mean,stdev)
-                    total_val_pred,total_val_cov = predict(eval_loader, Ens, model,mean,stdev)  
+                    pos=True
+                    total_train_pred,total_train_cov = predict(train_loader, Ens, model,mean,stdev,pos)
+                    total_val_pred,total_val_cov = predict(eval_loader, Ens, model,mean,stdev,pos)  
                 else:
-                    train_pred,train_cov  = predict(train_loader, Ens ,model,mean,stdev)
-                    val_pred,val_cov = predict(eval_loader, Ens ,model,mean,stdev)
+                    train_pred,train_cov  = predict(train_loader, Ens ,model,mean,stdev,pos)
+                    val_pred,val_cov = predict(eval_loader, Ens ,model,mean,stdev,pos)
                       
                     total_train_pred += train_pred
                     total_val_pred +=val_pred
                     
                     total_train_cov  += train_cov
                     total_val_cov += val_cov
-                    
-            df_train =pd.DataFrame(dataset['train_dataset'].y,columns=[target])   
-            df_eval =pd.DataFrame(dataset['eval_dataset'].y,columns=[target])
-            
-            df_train[ystar_col] = total_train_pred /K
-            df_train[ystar_col_std] = (np.sqrt(total_train_cov))/K # save the sd
-            df_eval[ystar_col] = total_val_pred/K   
-            df_eval[ystar_col_std] = (np.sqrt(total_val_cov))/K 
-              
-            df_out = pd.concat((df_train, df_eval))[[target, ystar_col,ystar_col_std]]
-            df_out = df_out.reset_index(drop=True)
-            
-            
-            # unnormalise target for plotting
-            df_out[target] = df_out[target] * dataset.get('target_stdev') + dataset.get('target_mean')
-            print(df_out)
-            
-            df_out.to_csv('./Distributed_results/Predictions'+str(volume)+'.csv')
-            
-            # Figures
-            pio.templates.default = "plotly_white"
-            
-            plot_template = dict(
-                layout=go.Layout({
-                    "font_size": 18,
-                    "xaxis_title_font_size": 24,
-                    "yaxis_title_font_size": 24})
-            )
-            # With Estimations (mean and Standrad deviation)  
-            fig = go.Figure(data=go.Scatter(
-                    x=df_out.index,
-                    y = df_out[ystar_col],
-                    error_y=dict(
-                        type='data', # value of error bar given in data coordinates
-                        array=df_out[ystar_col_std],
-                        visible=True),
-                    name="Prediction"
-                )   )
-            
-            fig.add_trace(go.Scatter(x=df_out.index,y=df_out[target],name="Ground truth"))
-            fig.add_vline(x=df_train.index[-1], line_width=4, line_dash="dash")
-            fig.update_layout(
-              template=plot_template, legend=dict(orientation='h', y=1.02, title_text="")
-            )
-            
-            fig.write_html("./Distributed_results/NASDAQenkf_fixedH_deterministicEnsemble.html")
-            
-            # With Predictions only
-            df_out_mean =df_out.drop('Model forecast std',axis=1) 
-            
-            fig = px.line(df_out_mean, labels={'value': "NDX", 'created_at': 'Date'})
-            fig.add_vline(x=df_train.index[-1], line_width=4, line_dash="dash")
-            fig.add_annotation(xref="paper", x=0.75, yref="paper", y=0.8, text="Test set start", showarrow=False)
-            fig.update_layout(
-              template=plot_template, legend=dict(orientation='h', y=1.02, title_text="")
-            )
-            fig.write_html("./Distributed_results/NASDAQline_fixedH_deterministicEnsemble.html")
-            
-            
-            ### Distribution of the predictions and target
-            
-            fig = px.scatter(df_out, x=df_out.index, y=ystar_col,marginal_y='histogram',color_discrete_sequence=['blue'])
-            fig.add_trace(## Add the points data[0]
-                px.scatter(df_out, x=df_out.index, y=target,marginal_y='histogram',opacity=0.5,color_discrete_sequence=['red']).data[0]
-            )
-            fig.add_trace(## Add the histogram [1]
-                px.scatter(df_out, x=df_out.index, y=target,marginal_y='histogram',opacity=0.5,color_discrete_sequence=['red']).data[1]
-            )
-            
-            fig.write_html('./Distributed_results/results_fixedH_deterministicEnsemble.html') 
+                
+            if i == 0 :
+                total_train_pred,total_train_cov = predict(train_loader, Ens, model,mean,stdev)
+                total_val_pred,total_val_cov = predict(eval_loader, Ens, model,mean,stdev)  
+            else:
+                train_pred,train_cov  = predict(train_loader, Ens ,model,mean,stdev)
+                val_pred,val_cov = predict(eval_loader, Ens ,model,mean,stdev)
+                  
+                total_train_pred += train_pred
+                total_val_pred +=val_pred
+                
+                total_train_cov  += train_cov
+                total_val_cov += val_cov
+                
+                
+                
+        df_train =pd.DataFrame(dataset['train_dataset'].y,columns=[target])   
+        df_eval =pd.DataFrame(dataset['eval_dataset'].y,columns=[target])
         
+        df_train[ystar_col] = total_train_pred /K
+        df_train[ystar_col_std] = (np.sqrt(total_train_cov))/K # save the sd
+        df_eval[ystar_col] = total_val_pred/K   
+        df_eval[ystar_col_std] = (np.sqrt(total_val_cov))/K 
+          
+        df_out = pd.concat((df_train, df_eval))[[target, ystar_col,ystar_col_std]]
+        df_out = df_out.reset_index(drop=True)
+        
+        # Transform the pollution target   # Note no need to change the scale of the variance as they are in the original scale
+        if args.dataset == 'Pollution':
+            df_out[target] = np.exp(df_out[target])-5
+        
+        # unnormalise target for plotting
+        df_out[target] = df_out[target] * dataset.get('target_stdev') + dataset.get('target_mean')
+        
+        print(df_out)
+        
+        df_out.to_csv(f'{savefile}/Predictions.csv')
+        
+        # Figures
+        pio.templates.default = "plotly_white"
+        
+        plot_template = dict(
+            layout=go.Layout({
+                "font_size": 18,
+                "xaxis_title_font_size": 24,
+                "yaxis_title_font_size": 24})
+        )
+        # With Estimations (mean and Standrad deviation)  
+        fig = go.Figure(data=go.Scatter(
+                x=df_out.index,
+                y = df_out[ystar_col],
+                error_y=dict(
+                    type='data', # value of error bar given in data coordinates
+                    array=df_out[ystar_col_std],
+                    visible=True),
+                name="Prediction"
+            )   )
+        
+        fig.add_trace(go.Scatter(x=df_out.index,y=df_out[target],name="Ground truth"))
+        fig.add_vline(x=df_train.index[-1], line_width=4, line_dash="dash")
+        fig.update_layout(
+          template=plot_template, legend=dict(orientation='h', y=1.02, title_text="")
+        )
+        
+        fig.write_html(f'{savefile}/Estimations.html')
+        
+        # With Predictions only
+        df_out_mean =df_out.drop('Model forecast std',axis=1) 
+        
+        fig = px.line(df_out_mean, labels={'value': args.t, 'created_at': 'Date'})
+        fig.add_vline(x=df_train.index[-1], line_width=4, line_dash="dash")
+        fig.add_annotation(xref="paper", x=0.75, yref="paper", y=0.8, text="Test set start", showarrow=False)
+        fig.update_layout(
+          template=plot_template, legend=dict(orientation='h', y=1.02, title_text="")
+        )
+        fig.write_html(f'{savefile}/line.html')
+        
+        
+        ### Distribution of the predictions and target
+        
+        fig = px.scatter(df_out, x=df_out.index, y=ystar_col,marginal_y='histogram',color_discrete_sequence=['blue'])
+        fig.add_trace(## Add the points data[0]
+            px.scatter(df_out, x=df_out.index, y=target,marginal_y='histogram',opacity=0.5,color_discrete_sequence=['red']).data[0]
+        )
+        fig.add_trace(## Add the histogram [1]
+            px.scatter(df_out, x=df_out.index, y=target,marginal_y='histogram',opacity=0.5,color_discrete_sequence=['red']).data[1]
+        )
+        
+        fig.write_html(f'{savefile}/results.html') 
+    

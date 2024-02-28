@@ -33,10 +33,11 @@ class ModelH(nn.Module):
         super().__init__()
         self.hidden_units = hidden_units
         self.output = target
-        #linear Identity matrix
+        # linear layer
         # self.H = nn.Linear(in_features=self.hidden_units, out_features=1,dtype=torch.double)
-
+        
+        #linear Identity matrix
         self.H = torch.eye(n = self.hidden_units,m = len([target]),requires_grad = False).double()
         
-def get_models(features,target,num_hidden_units, dropout):
-    return ModelF(features=len(features),hidden_units=num_hidden_units,dropout=dropout), ModelH(target = len(target),hidden_units=num_hidden_units)
+def get_models(features, target, num_hidden_units, layers, dropout):
+    return ModelF(features=len(features),hidden_units=num_hidden_units,layers = layers,dropout=dropout), ModelH(target = len(target),hidden_units=num_hidden_units)

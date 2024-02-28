@@ -12,19 +12,39 @@ import warnings
 warnings.filterwarnings('ignore')
 
 import torch
+from torch import nn
 
-def test_model(data_loader, model, Ens,loss_function,K):
+
+#Error percentage
+def SMAPE(A, F):    
+    return 2/len(A) * torch.sum(torch.abs(F - A) / (torch.abs(A) + torch.abs(F)))
+
+
+def loss_fun(pred,ground):
+    # Loss function for comparing
+    mse = nn.MSELoss()
+    rmse= torch.sqrt(mse(pred, ground))
+    smape = SMAPE(pred,ground)
+    return mse(pred,ground) ,rmse, smape
+    
+
+def test_model(data_loader, model, Ens,K):
 
     num_batches = len(data_loader)
-    total_loss = 0
     total_likelihood = 0
+    total_mse = 0
+    total_rmse = 0
+    total_smape = 0
+    total_nis = 0 
     model.eval()
     train = False
     
     # MC testing because of stochasticity
-    k_loss = []
     k_like = []
-    
+    k_mse = []
+    k_rmse = []
+    k_smape = []
+    k_nis = []
     #Init EnKF
     bs = data_loader.batch_size
     n = model.F.weight_hh_l0.shape[-1] #number of features found through S dimensions
@@ -38,27 +58,47 @@ def test_model(data_loader, model, Ens,loss_function,K):
             enkf_state = state_init
             
             for s, (X, y) in enumerate(data_loader):
-                out, cov,enkf_state, likelihood = model(X,y,enkf_state,train) 
+                out, cov,enkf_state, likelihood,nis = model(X,y,enkf_state,train) 
                 
-                loss = loss_function(out, y)
+                mse,rmse,smape = loss_fun(out, y)
 
                 total_likelihood += likelihood.item()
-                total_loss += loss.item()
+                total_nis += nis.item()
+                total_mse += mse.item()
+                total_rmse += rmse.item()
+                total_smape += smape.item()
                 
-            avg_loss = total_loss / num_batches
+                
+            
             avg_like = total_likelihood / num_batches
-            k_loss.append(avg_loss)
+            avg_nis = total_nis / num_batches
+            avg_mse = total_mse / num_batches
+            avg_rmse = total_rmse / num_batches
+            avg_smape = total_smape / num_batches
+            
+            
+            
             k_like.append(avg_like)
+            k_nis.append(avg_nis)
+            k_mse.append(avg_mse)
+            k_rmse.append(avg_rmse)
+            k_smape.append(avg_smape)
         
-    t_k_loss= torch.Tensor(k_loss)
-    t_k_like= torch.Tensor(k_like)
+        
+        
+        t_k_like= torch.Tensor(k_like)
+        t_k_nis= torch.Tensor(k_nis)
+        t_k_mse= torch.Tensor(k_mse)
+        t_k_rmse= torch.Tensor(k_rmse)
+        t_k_smape= torch.Tensor(k_smape)
+    
+        print(f"{K} -MC Test likelihood: {torch.mean(t_k_like):.3f} +/- {torch.std(t_k_like):.3f}")
+        print(f"{K} -MC Test NIS: {torch.mean(t_k_nis):.3f} +/- {torch.std(t_k_nis):.3f}")
+        print(f"{K} -MC Test MSE: {torch.mean(t_k_mse):.3f} +/- {torch.std(t_k_mse):.3f}")
+        print(f"{K} -MC Test RMSE: {torch.mean(t_k_rmse):.3f} +/- {torch.std(t_k_rmse):.3f}")
+        print(f"{K} -MC Test sMAPE: {torch.mean(t_k_smape):.3f} +/- {torch.std(t_k_smape):.3f}")
 
-    print(f"{K} -MC Test loss: {torch.mean(t_k_loss):.3f} +/- {torch.std(t_k_loss):.3f}")
-    print(f"{K} -MC Test likelihood: {torch.mean(t_k_like):.3f} +/- {torch.std(t_k_like):.3f}")
-
-
-
-def predict(data_loader, Ens,model,target_mean,target_stdev):
+def predict(data_loader, Ens,model,target_mean,target_stdev,pos = False):
     """Just like `test_loop` function but keep track of the outputs instead of the loss
     function.
     """
@@ -84,7 +124,7 @@ def predict(data_loader, Ens,model,target_mean,target_stdev):
         
         for s, (X, y) in enumerate(data_loader):
 
-            out, cov, enkf_state,_ = model(X,y,enkf_state,train,prediction,target_mean,target_stdev) 
+            out, cov, enkf_state,_,_ = model(X,y,enkf_state,train,prediction,target_mean,target_stdev,pos) 
 
             output = torch.cat((output, out), 0)
             out_cov = torch.cat((out_cov, cov), 0)
