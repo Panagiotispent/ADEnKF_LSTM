@@ -49,7 +49,7 @@ from Prep_data import get_dataloaders
 
 
 # from EnKF import Init_model
-from PF import Init_model
+from EnKF import Init_model
 
 from Train import init_optimiser,train_model
 from Test import test_model,predict
@@ -58,9 +58,9 @@ from Test import test_model,predict
 parser = argparse.ArgumentParser('ADEnKF_LSTM')
 parser.add_argument('-dataset', default='nasdaq100_padding')# nasdaq100_padding, Pollution, NA_1990_2002_Monthly
 parser.add_argument('-t',metavar='-target', default='NDX') # NDX, pollution, TMP
-parser.add_argument('-fraction', type=int, default=1000)
-parser.add_argument('-bs', type=int, metavar='-batch-size',default=60) # 120 (minutes), 24 (hours), 12 (months)
-parser.add_argument('-sequence-length', type=int, default=12) # 60 (minutes), 6 (hours), 3 (months)
+parser.add_argument('-fraction', type=int, default=100)
+parser.add_argument('-bs', type=int, metavar='-batch-size',default=60) # 60 (minutes), 24 (hours), 12 (months)
+parser.add_argument('-sequence-length', type=int, default=12) # 12 (minutes), 6 (hours), 3 (months)
 
 parser.add_argument('-ms', type=float, metavar='-missing-values',default=False)
 parser.add_argument('-aff', type=float, metavar='-affected-missing-data',default=0.0)
@@ -209,8 +209,8 @@ if __name__ == '__main__': #????
         mean = dataset.get('target_mean')
         stdev = dataset.get('target_stdev')
         
-        # test_model(train_loader, model, Ens,args.mc)
-        # test_model(eval_loader, model, Ens,args.mc)
+        test_model(train_loader, model, Ens,args.mc)
+        test_model(eval_loader, model, Ens,args.mc)
         
         K = 1 # MC prediction
         # # Evaluation

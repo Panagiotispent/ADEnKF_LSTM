@@ -32,9 +32,10 @@ class EnKF_LSTM(nn.Module):
         # Constrained positive variables / Square standard diviation noises as we need covariances
         noise_q = torch.square(noise_q)
         noise_e =torch.square(noise_e)
-        
+
         #LSTM run
         hid_seq ,(h_t,c_t) = args(x,(h,c))
+
         # input(h_t[:,0,-1])
         # This is time-wise propagation in the LSTM, 
         # This generates idividual noises for each lstm layer, batch and hidden units
@@ -87,8 +88,8 @@ class EnKF_LSTM(nn.Module):
                     # uhi[l,-b,:,i] = (init_mu[l,-b] + torch.sqrt(torch.diag(init_cov[l,-b])) @ torch.randn(n).double()).double()
                     
                     # Unconstrained cov, lower triangular to sample
-                    uhi[l,b,:,i] = (init_mu[l,b] + torch.tril(init_cov[l,b]) @ torch.randn(n).double()).double()
-                    
+                    uhi[l,b,:,i] = (init_mu[l,b] +  torch.cholesky(init_cov[l,b]) @ torch.randn(n).double()).double()
+
         state = uhi
         return state
     
@@ -118,7 +119,7 @@ class EnKF_LSTM(nn.Module):
                     # uhi[l,b,:,i] = (uh[l,b] + torch.sqrt(torch.diag(Bh[l,b])) @ torch.randn(n).double()).double()
                     
                     # Unconstrained cov, lower triangular to sample
-                    uhi[l,b,:,i] = (uh[l,b] + torch.tril(Bh[l,b]) @ torch.randn(n).double()).double()
+                    uhi[l,b,:,i] = (uh[l,b] + torch.cholesky(Bh[l,b]) @ torch.randn(n).double()).double()
         # input(uhi)
         state = uhi
         return state
@@ -217,8 +218,9 @@ class EnKF_LSTM(nn.Module):
         middle= N//2 # to have a connected ensemble of the state
         
         for i in range(N//2): # forecast ensembles ->  You add the noise separatly for long-short term memory
+
             _, new_uhi[:,:,:,i],new_uhi[:,:,:,(i+middle)] = self.TransitionF(eq,x,lstm_state[:,:,:,i],lstm_state[:,:,:,(i+middle)])
-                     
+
         enkf_state = new_uhi
         return enkf_state
     
@@ -232,7 +234,7 @@ class EnKF_LSTM(nn.Module):
         ls,bs,n,N = ubi.shape # ls,bs,n is the state dimension and N is the size of ensemble
         
         ub = torch.mean(ubi,-1)
-        
+
         #propagate ensembles to observation space, for the uncertainty propagation preserve ls
         hxi = self.TransitionH(measurement_model,ubi) # 
         
