@@ -59,7 +59,7 @@ def plot(x,s_name,name):
 
 #Error percentage
 def SMAPE(A, F):     
-    return 100/len(A) * torch.sum(torch.abs(F - A) / (torch.abs(A) + torch.abs(F)))
+    return 2/len(A) * torch.sum(torch.abs(F - A) / (torch.abs(A) + torch.abs(F)))
 
 def loss_fun(pred,ground):
     # Loss function for comparing
@@ -99,7 +99,7 @@ def init_optimiser(param,lr):
 
 
 # # Train
-def train_model(data_loader, model, Ens, num_epochs,optimizer,s_name):
+def train_model(data_loader, model, Ens, num_epochs,optimizer,s_name,pf):
     comm = MPI.COMM_WORLD
     
     if (comm.Get_rank() == 0):
@@ -150,11 +150,14 @@ def train_model(data_loader, model, Ens, num_epochs,optimizer,s_name):
     
         # generate params based on LSTM hidden units which are the state of the LSTM
         state_init = model.generate_param(n,bs,model.F.num_layers,N) 
-         
-
-
-        uhi_init = state_init
-        uhi = uhi_init.clone()
+        
+        if pf:
+            (uhi_init,w_init) = state_init
+            uhi = uhi_init.clone()
+            w = w_init.clone()
+        else:
+            uhi_init = state_init
+            uhi = uhi_init.clone()
 
         
         for s, (X, y) in enumerate(data_loader):
@@ -165,26 +168,30 @@ def train_model(data_loader, model, Ens, num_epochs,optimizer,s_name):
             # We set the EnKF as variables within the loop as we want the .bacwards() graph to start for each loop 
             #https://discuss.pytorch.org/t/runtimeerror-trying-to-backward-through-the-graph-a-second-time-but-the-buffers-have-already-been-freed-specify-retain-graph-true-when-calling-backward-the-first-time/6795/3
             #https://jdhao.github.io/2017/11/12/pytorch-computation-graph/
-    
-            enkf_state = V(uhi)
+            
+            if pf:
+                state = (V(uhi),V(w))
+            else:
+                state = V(uhi)
 
             
             # input(enkf_state[1])
             ''' Handle the batch size changes at the last batch of the PyTorch loaders ''' 
             if bs > X.shape[0]:
-                
-                enkf_state = model.gaussian_ensemble(enkf_state, n, N, bs = X.shape[0]) # create a gaussian ens based on ens distribution
+                state = model.gaussian_samp(state, n, N, bs = X.shape[0]) # create a gaussian ens based on ens distribution
                 
             elif bs< X.shape[0]: #Return to original ensembles
-                enkf_state = model.gaussian_ensemble(enkf_state, n, N, bs = X.shape[0]) 
+                state = model.gaussian_samp(state, n, N, bs = X.shape[0]) 
                 
-
             # Run an AD-EnKF iteration 
-            out, cov ,enkf_state, likelihood, nis = model(X,y,enkf_state,train)
+            out, cov ,state, likelihood, nis = model(X,y,state,train)
 
-            uhi = enkf_state
-
-
+            if pf:
+                (uhi,w) = state
+            else:
+                uhi = state
+                
+            
             #Gradients
             likelihood.backward()
             

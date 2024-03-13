@@ -28,7 +28,7 @@ def loss_fun(pred,ground):
     return mse(pred,ground) ,rmse, smape
     
 
-def test_model(data_loader, model, Ens,K):
+def test_model(data_loader, model, Ens,K,pf):
 
     num_batches = len(data_loader)
     total_likelihood = 0
@@ -53,12 +53,11 @@ def test_model(data_loader, model, Ens,K):
     with torch.no_grad():
         for k in range(K):
     
-            state_init = model.generate_param(n,bs,model.F.num_layers,N) 
+            state = model.generate_param(n,bs,model.F.num_layers,N) 
             
-            enkf_state = state_init
             
             for s, (X, y) in enumerate(data_loader):
-                out, cov,enkf_state, likelihood,nis = model(X,y,enkf_state,train) 
+                out, cov, state, likelihood,nis = model(X,y,state,train) 
                 
                 mse,rmse,smape = loss_fun(out, y)
 
@@ -118,13 +117,12 @@ def predict(data_loader, Ens,model,target_mean,target_stdev,pos = False):
     
     with torch.no_grad():
     
-        state_init = model.generate_param(n,bs,model.F.num_layers,N) 
+        state = model.generate_param(n,bs,model.F.num_layers,N) 
         
-        enkf_state = state_init
         
         for s, (X, y) in enumerate(data_loader):
 
-            out, cov, enkf_state,_,_ = model(X,y,enkf_state,train,prediction,target_mean,target_stdev,pos) 
+            out, cov, state,_,_ = model(X,y,state,train,prediction,target_mean,target_stdev,pos) 
 
             output = torch.cat((output, out), 0)
             out_cov = torch.cat((out_cov, cov), 0)
