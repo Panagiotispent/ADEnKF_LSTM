@@ -116,7 +116,10 @@ class EnKF_LSTM(nn.Module):
             for l in range(ls):  # Need this as we have varying Ensemble size from bs
                 for b in range(bs):
                     # Constrained covariance, Cholesky decomposition, and jitter
-                    L = torch.linalg.cholesky(Bh[l, b] + (torch.Tensor([1e-6]) * torch.eye(n)).double())
+                    try:
+                        L = torch.linalg.cholesky(Bh[l, b] + (torch.Tensor([1e-6]) * torch.eye(n)).double())
+                    except:
+                        L += (torch.Tensor([1e-4]) * torch.eye(n)).double()
                     uhi[l, b, :, i] = (uh[l, b] + (L @ torch.randn(n).double())).double()
     
         state = uhi
@@ -241,7 +244,7 @@ class EnKF_LSTM(nn.Module):
         except RuntimeError:
             # Handling non-positive definite covariance matrix
             # Adding small jitter to diagonal elements to make it positive definite
-            jitter = torch.eye(bs) * 1e-6
+            jitter = torch.eye(bs) * 1e-4
             sig += jitter
             L = torch.linalg.cholesky(sig)
     
