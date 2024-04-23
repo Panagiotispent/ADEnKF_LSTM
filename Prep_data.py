@@ -123,7 +123,13 @@ def get_dataloaders(Datafile,target,fraction = 1, feature_fraction = 1, forecast
     df_eval = df.loc[test_start:].copy()
     
     print("Test set fraction:", len(df_eval) / len(df))
-   
+    
+    # FIRST Constrain for negative normalised values of pollution
+    if Datafile == './Data/Pollution.csv':
+        df_train[target] = np.log(df_train[target]+5)
+        df_eval[target] = np.log(df_eval[target]+5)
+        
+    
     # To normalise the data
     target_mean = float(df_train[target].mean())
     target_stdev = float(df_train[target].std())
@@ -132,14 +138,9 @@ def get_dataloaders(Datafile,target,fraction = 1, feature_fraction = 1, forecast
     for c in df_train.columns:
         mean = float(df_train[c].mean())
         stdev = float(df_train[c].std())
-        
+            
         df_train[c] = (df_train[c] - mean) / stdev
         df_eval[c] = (df_eval[c] - mean) / stdev
-        
-        # Constrain for negative normalised values of pollution 
-        if Datafile == './Data/Pollution.csv' and c == target:
-            df_train[target] = np.log(df_train[target]+5)
-            df_eval[target] = np.log(df_eval[target]+5)
     
     # Due to normalisation check for Nans 
     if df_train.isnull().values.any() or df_eval.isnull().values.any():

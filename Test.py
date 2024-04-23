@@ -15,16 +15,23 @@ import torch
 from torch import nn
 
 
-#Error percentage
-def SMAPE(A, F):    
-    return 2/len(A) * torch.sum(torch.abs(F - A) / (torch.abs(A) + torch.abs(F)))
-
+def batched_SMAPE(A, F):
+    # Calculate absolute differences
+    abs_diff = torch.abs(F - A)
+    
+    # Calculate absolute sum
+    abs_sum = torch.abs(A) + torch.abs(F)
+    
+    # Calculate SMAPE
+    smape = 2 / A.size(0) * torch.mean(abs_diff / abs_sum)
+    
+    return smape
 
 def loss_fun(pred,ground):
     # Loss function for comparing
     mse = nn.MSELoss()
     rmse= torch.sqrt(mse(pred, ground))
-    smape = SMAPE(pred,ground)
+    smape = batched_SMAPE(pred,ground)
     return mse(pred,ground) ,rmse, smape
     
 
@@ -47,19 +54,29 @@ def test_model(data_loader, model, Ens,K,pf):
     k_nis = []
     #Init EnKF
     bs = data_loader.batch_size
-    n = model.F.weight_hh_l0.shape[-1] #number of features found through S dimensions
+    n =  model.F.layers[0].cell.hidden_size #number of hidden cells
     N = Ens
     
     with torch.no_grad():
         for k in range(K):
     
-            state = model.generate_param(n,bs,model.F.num_layers,N) 
+            state = model.generate_param(n,bs,len(model.F.layers),N) 
             
             
             for s, (X, y) in enumerate(data_loader):
+                
+                # input(enkf_state[1])
+                ''' Handle the batch size changes at the last batch of the PyTorch loaders ''' 
+                if bs > X.shape[0]:
+                    state = model.gaussian_samp(state, n, N, bs = X.shape[0]) # create a gaussian ens based on ens distribution
+                    
+                elif bs< X.shape[0]: #Return to original ensembles
+                    state = model.gaussian_samp(state, n, N, bs = X.shape[0]) 
+                
+                
                 out, cov, state, likelihood,nis = model(X,y,state,train) 
                 
-                mse,rmse,smape = loss_fun(out, y)
+                mse,rmse,smape = loss_fun(out.squeeze(-1), y) # squeeze m =1
 
                 total_likelihood += likelihood.item()
                 total_nis += nis.item()
@@ -68,14 +85,13 @@ def test_model(data_loader, model, Ens,K,pf):
                 total_smape += smape.item()
                 
                 
-            
             avg_like = total_likelihood / num_batches
             avg_nis = total_nis / num_batches
             avg_mse = total_mse / num_batches
             avg_rmse = total_rmse / num_batches
             avg_smape = total_smape / num_batches
             
-            
+
             
             k_like.append(avg_like)
             k_nis.append(avg_nis)
@@ -111,20 +127,28 @@ def predict(data_loader, Ens,model,target_mean,target_stdev,pos = False):
 
     #Init EnKF
     bs = data_loader.batch_size
-    n = model.F.weight_hh_l0.shape[-1] #number of features found through lstm dimensions
+    n =  model.F.layers[0].cell.hidden_size  #number of hidden cells
     N = Ens
     
     
     with torch.no_grad():
     
-        state = model.generate_param(n,bs,model.F.num_layers,N) 
+        state = model.generate_param(n,bs,len(model.F.layers),N) 
         
         
         for s, (X, y) in enumerate(data_loader):
-
+            
+            # input(enkf_state[1])
+            ''' Handle the batch size changes at the last batch of the PyTorch loaders ''' 
+            if bs > X.shape[0]:
+                state = model.gaussian_samp(state, n, N, bs = X.shape[0]) # create a gaussian ens based on ens distribution
+                
+            elif bs< X.shape[0]: #Return to original ensembles
+                state = model.gaussian_samp(state, n, N, bs = X.shape[0]) 
+            
             out, cov, state,_,_ = model(X,y,state,train,prediction,target_mean,target_stdev,pos) 
-
-            output = torch.cat((output, out), 0)
-            out_cov = torch.cat((out_cov, cov), 0)
+            
+            output = torch.cat((output, out.squeeze(-1)), 0) # squeeze m=1
+            out_cov = torch.cat((out_cov,  torch.diagonal(cov, dim1=-2, dim2=-1)), 0)
 
     return output.numpy(),out_cov

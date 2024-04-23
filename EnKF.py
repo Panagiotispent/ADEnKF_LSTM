@@ -13,15 +13,14 @@ class EnKF_LSTM(nn.Module):
     def __init__(self, modelF,modelH,diag_q = 1.0,diag_r = 0.5, diag_e=0.1):
         super().__init__()
 
-        self.F = modelF.lstm # F
+        self.F = modelF # F
         
-        self.H = modelH.H # H
-        
+        self.H = modelH # H
+
         # Noises
         self.q = nn.Parameter(torch.tensor(diag_q ,dtype=torch.double))
         self.e = nn.Parameter(torch.tensor(diag_e,dtype=torch.double))
         self.r = nn.Parameter(torch.tensor(diag_r,dtype=torch.double))
-        
 
     ''' Equations '''
     # LSTM layer
@@ -34,42 +33,47 @@ class EnKF_LSTM(nn.Module):
         noise_e =torch.square(noise_e)
 
         #LSTM run
-        hid_seq ,(h_t,c_t) = args(x,(h,c))
-
+        hid_seq ,(h_t,c_t) = args(x,(h,c),(noise_q,noise_e))
+        
+        
         # input(h_t[:,0,-1])
         # This is time-wise propagation in the LSTM, 
         # This generates idividual noises for each lstm layer, batch and hidden units
         # # # add noise 
-        new_h = h_t +  torch.sqrt(noise_q) * torch.randn(size)
-        new_c = c_t + torch.sqrt(noise_e) * torch.randn(size)
-        return hid_seq, new_h, new_c 
-    
+        # new_h = h_t +  torch.sqrt(noise_q) * torch.randn(size)
+        # new_c = c_t + torch.sqrt(noise_e) * torch.randn(size)
+        return hid_seq, h_t,c_t
     
     # Linear layer with no noise used in likelihood and predictions
     def obs_pred(self,eq,u):
         args,noise = eq
-        ls,bs,n,N = u.shape # here size is the batch of the size of the LSTM output(y)
+        # ls,bs,n,N = u.shape # here size is the batch of the size of the LSTM output(y)
         
-        u = u[-1].clone() # use the last layer of the stacked lstm to predict 
-        z = torch.zeros((bs,N)).double()
-        for i in range(N):
-            # z[:,i] = (args(u[:,:,i])).flatten() # linear layer  
-            z[:,i] = (u[:,:,i] @ args).flatten() # fixed linear layer
+        # u = u[-1].clone() # use the last layer of the stacked lstm to predict 
+        # z = torch.zeros((bs,N)).double()
+        # for i in range(N):
+        #     z[:,i] = (args(u[:,:,i])).flatten() # linear layer  
+        #     # z[:,i] = (u[:,:,i] @ args).flatten() # fixed linear layer
+        z = args(u)
+        
+        # Add the m =1 dimension
+        if len(z.shape) < 3:
+            z = z.unsqueeze(-2)
         
         return z
     
-    # Propagate ensembles to the observation space but for the uncertainty (consider all layers of NN) 
-    def TransitionH(self,eq,uhi):
-        args,noise = eq
-        ls,bs,n,N = uhi.shape # here size is the batch of the size of the LSTM output(y)
+    # # Propagate ensembles to the observation space but for the uncertainty (consider all layers of NN) 
+    # def TransitionH(self,eq,uhi):
+    #     args,noise = eq
+    #     ls,bs,n,N = uhi.shape # here size is the batch of the size of the LSTM output(y)
 
-        z = torch.zeros((ls,bs,N)).double()
-        for i in range(N):
-            for l in range(ls):
-                # z[l,:,i] = (args(uhi[l,:,:,i])).flatten() # linear layer 
-                z[l,:,i] = (uhi[l,:,:,i] @ args).flatten() # fixed linear layer 
+    #     # z = torch.zeros((ls,bs,N)).double()
+    #     # for i in range(N):
+    #     #     for l in range(ls):
+    #     #         z[l,:,i] = (args(uhi[l,:,:,i])).flatten() # linear layer 
+    #     #         # z[l,:,i] = (uhi[l,:,:,i] @ args).flatten() # fixed linear layer 
         
-        return z
+    #     return uhi[-1,:,-1]
     
     
     ''' Generate initial state '''
@@ -89,7 +93,6 @@ class EnKF_LSTM(nn.Module):
                     
                     # Unconstrained cov, lower triangular to sample
                     uhi[l,b,:,i] = (init_mu[l,b] +  torch.cholesky(init_cov[l,b]) @ torch.randn(n).double()).double()
-
         state = uhi
         return state
     
@@ -108,7 +111,7 @@ class EnKF_LSTM(nn.Module):
         Bh = torch.zeros([ls, bs, n, n]).double()
         for l in range(ls):
             for b in range(bs):
-                Bh[l, b] = torch.cov(ubi[l, b]) + 1e-6 * torch.eye(n)
+                Bh[l, b] = torch.cov(ubi[l, b])# + 1e-6 * torch.eye(n)
         
         # Generate Gaussian ensembles with reparameterization trick for AD
         uhi = torch.zeros(ls, bs, n, N).double()
@@ -174,13 +177,15 @@ class EnKF_LSTM(nn.Module):
     def forecast_ensemble(self,x,lstm_state, eq):
         
         ls,bs,n, N = lstm_state.shape
+        
         new_uhi = lstm_state.clone()
         middle= N//2 # to have a connected ensemble of the state
         
+        # preds = torch.zeros([bs,middle]) # half the preds from the ensemble size since ensemble state is (h,c)
         for i in range(N//2): # forecast ensembles ->  You add the noise separatly for long-short term memory
-
+            
             _, new_uhi[:,:,:,i],new_uhi[:,:,:,(i+middle)] = self.TransitionF(eq,x,lstm_state[:,:,:,i],lstm_state[:,:,:,(i+middle)])
-
+        
         enkf_state = new_uhi
         return enkf_state
     
@@ -189,36 +194,46 @@ class EnKF_LSTM(nn.Module):
     
     ''' Filter/ update step'''
     def torch_EnKF(self,state,y,measurement_model):
-        ubi = state
        
-        ls,bs,n,N = ubi.shape # ls,bs,n is the state dimension and N is the size of ensemble
+        ls,bs,n,N = state.shape # ls,bs,n is the state dimension and N is the size of ensemble
         
-        ub = torch.mean(ubi,-1)
+        ub = torch.mean(state,-1)
 
         #propagate ensembles to observation space, for the uncertainty propagation preserve ls
-        hxi = self.TransitionH(measurement_model,ubi) # 
+        hxi = self.obs_pred(measurement_model,state) # last depth (layers) and time (cells) prediction
         
-        hx = torch.mean(hxi,-1).double()    # Vectorized mean calculation along the last dimension
+        hx,P = self.Estimate(hxi)
+        
         
         # Vectorized calculations for HA and A Error
         HA = hxi - hx.unsqueeze(-1)
-        A = ubi - ub.unsqueeze(-1)
+        A = state - ub.unsqueeze(-1)
         
-        # Need ls for P with the same output, we consider both layers provide the same final output
-        P = torch.zeros([ls,bs,bs]).double()
-        for l in range(ls):
-            P[l] = torch.cov(hxi[l]) + torch.square(self.r) * torch.eye(bs).double() + 1e-6 * torch.eye(bs)
-       
-        # innovation of the Ensemble from the last layer
-        innov = (y.unsqueeze(-1) - hxi[-1]).double() 
-        
+        # If m = 1 unsqueeze to simulate 
+        if len(y.shape)<2:
+            y = y.unsqueeze(-1)
+        # innovation of the Ensemble from the last layer #???? only the last layer? or individually the layers
+        innov = (y.unsqueeze(-1) - hxi).double() 
+
         #???? if not we need to provide observation for both the layers, might be more sensible??? 
         
-        # Filter each layer with the same output and innovation 
-        X_new = torch.zeros([ls,bs,n,N]).double()    
-        for l in range(ls):
-            X_new[l] = ubi[l] + ((1/ (N-1))) * A[l] @ HA[l].T @ torch.linalg.inv(P[l]) @ innov
-               
+        # Update state
+        X_new = state + ((1 / (N - 1))) * A @ HA.transpose(-2, -1) @ torch.linalg.inv(P) @ innov
+        
+        # X_new = torch.zeros([ls,bs,n,N]).double()    
+        # for l in range(ls):
+        #     for b in range(bs):
+        #         X_new[l,b] = state[l,b] + ((1/ (N-1))) * A[l,b] @ HA[b].T @ torch.linalg.inv(P[b]) @ innov[b]
+        
+       
+        
+        # If we use the last layer for the innovation and covariance we can avoid the for loop
+        # # Filter each layer with the same output and innovation 
+        # X_new = torch.zeros([ls,bs,n,N]).double()    
+        # for l in range(ls):
+        #     X_new[l] = state[l] + ((1/ (N-1))) * A[l] @ HA.T @ torch.linalg.inv(P) @ innov
+            
+        # print(X_new)    
         # # Covariance from updated Ensemble
         # Cov_new = torch.zeros([ls,bs,n,n]).double()
         # for l in range(ls):
@@ -229,14 +244,31 @@ class EnKF_LSTM(nn.Module):
 
         return state
     
+    def Estimate(self,state):
+        
+        bs, m, N = state.shape
+        
+        Y_mu = torch.mean(state,dim=-1)
+        
+        # Center the data
+        centered_data = state - Y_mu.unsqueeze(-1)
+        
+        # Compute covariance matrices
+        cov= torch.matmul(centered_data, centered_data.transpose(1, 2)) / (N - 1) 
+        
+        cov += (torch.eye(m).unsqueeze(0) * torch.square(self.r)).double()
+        
+        return Y_mu, cov
+       
+    
     # Likelihood
     def likelihood(self,y,Y_mu,sig,measurement_model): # Per batch of measurements
-        bs = Y_mu.shape[0]
+        bs, m = Y_mu.shape
         # Innovation of ground truth with propagated ens mean
-        innov = y - Y_mu
+        innov = y.unsqueeze(-1) - Y_mu
     
         # Covariance matrix + jitter
-        sig = sig + 1e-6 * torch.eye(bs)
+        sig = sig + 1e-6 * torch.eye(m).unsqueeze(0)
     
         # Cholesky decomposition
         try:
@@ -244,30 +276,63 @@ class EnKF_LSTM(nn.Module):
         except RuntimeError:
             # Handling non-positive definite covariance matrix
             # Adding small jitter to diagonal elements to make it positive definite
-            jitter = torch.eye(bs) * 1e-4
+            jitter =  1e-4 * torch.eye(m).unsqueeze(0)
             sig += jitter
+            
             L = torch.linalg.cholesky(sig)
     
         # Solve for inverse covariance using Cholesky decomposition
-        inv_sig = torch.linalg.inv(L.T) @ torch.linalg.inv(L)
-    
-        # Compute log-likelihood
-        l = -0.5 * torch.logdet(sig) - 0.5 * (innov @ inv_sig @ (innov.T))
+        inv_sig = (torch.linalg.inv(L.transpose(-2,-1)) @ torch.linalg.inv(L)).double()
         
-        return l
+        # Compute log-likelihood
+        log_det_sig = torch.logdet(sig)
+        sum_term = torch.sum(innov.unsqueeze(-2) @ inv_sig @ innov.unsqueeze(-1), dim=(-1, -2))
+        l = -0.5 * log_det_sig - 0.5 * sum_term    
+        
+        # Likelihood calculated over all the datapoints / not mean
+        sum_l = torch.sum(l)
+        
+        
+        # l = 0
+        # for b in range(bs):
+        #     # Compute log-likelihood
+        #     l += -0.5 * torch.logdet(sig[b])- 0.5 * (innov[b] @ inv_sig[b] @ innov[b].T)
+        
+        # mean_l = l/bs
+        
+        return sum_l
     
     def NIS(self, Y_mu, sig, y, measurement_model):
-        bs = Y_mu.shape[0]
-        
+        bs,m = Y_mu.shape
+    
         # Innovation of ground truth with propagated ens mean
-        innov = y - Y_mu
-        
+        innov = y.unsqueeze(-1) - Y_mu
+        # input(innov.shape)
         # Covariance matrix + jitter
-        sig = sig + 1e-6 * torch.eye(bs)
+        sig = sig + (1e-6 * torch.eye(m).unsqueeze(0))
+        
+        # Cholesky decomposition
+        try:
+            L = torch.linalg.cholesky(sig)
+        except RuntimeError:
+            # Handling non-positive definite covariance matrix
+            # Adding small jitter to diagonal elements to make it positive definite
+            print(torch.linalg.eig(sig))
+            jitter =  1e-4 * torch.eye(m).unsqueeze(0)
+            sig += jitter
+            print(torch.linalg.eig(sig))
+            L = torch.linalg.cholesky(sig)
+    
+        # Solve for inverse covariance using Cholesky decomposition
+        inv_sig = (torch.linalg.inv(L.transpose(-2,-1)) @ torch.linalg.inv(L)).double()
+               
         
         # NIS / ANIS
-        nis = innov.T @ torch.linalg.inv(sig) @ innov
+        nis = []
+        for b in range(bs):
+            nis.append(innov[b].T @ inv_sig[b] @ innov[b])
         
+        nis = torch.mean(torch.stack(nis))
         
         # # ANEES
         # #propagate ensembles to observation space with no added noise
@@ -293,71 +358,63 @@ class EnKF_LSTM(nn.Module):
         return nis
 
     def forward(self, x,y,enkf_state,train,prediction = False,target_mean='',target_stdev='',pos = False):
-        uhi = enkf_state #(h_t and c_t)
-        
+
         bs, _, _ = x.size() # target size                                                
         
         dynamic_model = (self.F, self.q,self.e)# dynamic model
         
-        measurement_model_out = (self.H, self.r)# measurement model
+        measurement_model = (self.H, self.r)# measurement model
+
         
         # Forecast state
-        enkf_state = self.forecast_ensemble(x,uhi,dynamic_model)
+        enkf_state = self.forecast_ensemble(x,enkf_state,dynamic_model)
         
 
         # for the testing of the model we do not have any EnKF observations
         if not train: 
             
-            #propagate ensembles to observation space
-            Y = self.obs_pred(measurement_model_out,enkf_state)
+            # #propagate ensembles to observation space
+            Y = self.obs_pred(measurement_model,enkf_state)
             
-            Y_mu = torch.mean(Y,-1)
-            
-            # Propagated ens Covariance
-            sig = torch.cov(Y) + (torch.square(self.r) * torch.eye(bs)).double() 
+            Y_mu,sig = self.Estimate(Y)
             
             ''' working with the predictions '''
-            l = self.likelihood(y, Y_mu, sig, measurement_model_out)
-            nis = self.NIS(Y_mu, sig, y, measurement_model_out)
+            l = self.likelihood(y, Y_mu, sig, measurement_model)
+            nis = self.NIS(Y_mu, sig, y, measurement_model)
             
             #unnormalise for predictions with the inverse normalisation function used on the dataset
             if prediction: 
                 ''' Unnormalise'''
-                #Reverse transformation of target if target needs to be positive
-                if pos:
-                    Y = torch.exp(Y)-5 #offset set in prep_data
                 
                 # Scaled estimation
                 Y = Y* target_stdev + target_mean
                 
-                Y_mu = torch.mean(Y,-1)
+                #Reverse transformation of target if target needed to be positive
+                if pos:
+                    Y = torch.exp(Y)-5 #offset set in prep_data
                 
-                # Propagated ens Covariance scaled and scaled observation noise
-                sig = torch.cov(Y) + ((torch.square(self.r) * torch.square(torch.Tensor([target_stdev]))) * torch.eye(bs)).double() #
-                # sig = sig * target_stdev
+                Y_mu,sig = self.Estimate(Y)
+                # sig = sig * torch.eye(Y.shape[1]).unsqueeze(0) * torch.square(torch.Tensor([target_stdev])).double()
                
-                sig = torch.Tensor([sig])
+                # sig = torch.Tensor([sig])
             
             # Update the state after predicting with the current measurement
-            enkf_state = self.torch_EnKF(enkf_state,y,measurement_model_out)
+            enkf_state = self.torch_EnKF(enkf_state,y,measurement_model)
             
             return Y_mu , sig, enkf_state,  l, nis
         
         else:
             # Update the forecast with given y
-            enkf_state = self.torch_EnKF(enkf_state,y,measurement_model_out)
+            enkf_state = self.torch_EnKF(enkf_state,y,measurement_model)
             
-            #propagate ensembles to observation space without noise
-            Y = self.obs_pred(measurement_model_out,enkf_state)
+            # #propagate ensembles to observation space without noise
+            Y = self.obs_pred(measurement_model,enkf_state)
             
-            Y_mu = torch.mean(Y,-1)
-            
-            # Propagated ens Covariance
-            sig = torch.cov(Y) + (torch.square(self.r) * torch.eye(bs)).double()
+            Y_mu,sig = self.Estimate(Y)
 
             ''' working with a filtered ensembles ''' 
-            l = self.likelihood(y,Y_mu,sig,measurement_model_out) 
-            nis = self.NIS( Y_mu,sig, y, measurement_model_out)
+            l = self.likelihood(y,Y_mu,sig,measurement_model) 
+            nis = self.NIS( Y_mu,sig, y, measurement_model)
             
             return Y_mu, sig ,enkf_state, l, nis
 

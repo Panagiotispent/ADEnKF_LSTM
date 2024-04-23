@@ -10,11 +10,10 @@ import numpy as np
 import sys
 import time
 
-from torch.autograd import Variable as V
 from torch.optim.lr_scheduler import ExponentialLR
 import torch
 from torch import nn
-from mpi4py import MPI
+# from mpi4py import MPI
 
 
 # Set the number of threads that can be activated by torch
@@ -57,32 +56,41 @@ def plot(x,s_name,name):
         pass
  
 
-#Error percentage
-def SMAPE(A, F):     
-    return 2/len(A) * torch.sum(torch.abs(F - A) / (torch.abs(A) + torch.abs(F)))
+def batched_SMAPE(A, F):
+    # Calculate absolute differences
+    abs_diff = torch.abs(F - A)
+    
+    # Calculate absolute sum
+    abs_sum = torch.abs(A) + torch.abs(F)
+    
+    # Calculate SMAPE
+    smape = 2 / A.size(0) * torch.mean(abs_diff / abs_sum)
+    
+    return smape
+
 
 def loss_fun(pred,ground):
     # Loss function for comparing
     mse = nn.MSELoss()
     rmse= torch.sqrt((mse(pred, ground)))
-    smape = SMAPE(pred,ground)
+    smape = batched_SMAPE(pred,ground)
     return mse(pred,ground) ,rmse, smape
 
 
 
-# Distributed sync of gradients from pytorch documentation
-def sync_grads(model):
-    comm = MPI.COMM_WORLD
-    P = comm.Get_size()
+# # Distributed sync of gradients from pytorch documentation
+# def sync_grads(model):
+#     comm = MPI.COMM_WORLD
+#     P = comm.Get_size()
     
-    for name, param in model.named_parameters():
-        try:# If either Transition function is fixed skip from trying to send a gradient
-            sendbuf =param.grad.data
-            recvbuf = torch.zeros_like(sendbuf)
-            comm.Allreduce(sendbuf,recvbuf, op=MPI.SUM)
-            param.grad.data = recvbuf / P
-        except:
-            pass
+#     for name, param in model.named_parameters():
+#         try:# If either Transition function is fixed skip from trying to send a gradient
+#             sendbuf =param.grad.data
+#             recvbuf = torch.zeros_like(sendbuf)
+#             comm.Allreduce(sendbuf,recvbuf, op=MPI.SUM)
+#             param.grad.data = recvbuf / P
+#         except:
+#             pass
 
         
 def multdict(send,recv,datatype):# create a list with all the likelihoods and models for all ranks
@@ -92,7 +100,7 @@ def multdict(send,recv,datatype):# create a list with all the likelihoods and mo
  
 # maxlikeop = MPI.Op.Create(maxlike, commute=True) #MAX is a commutative function    
 
-multdictop =  MPI.Op.Create(multdict, commute=True)
+# multdictop =  MPI.Op.Create(multdict, commute=True)
 
 def init_optimiser(param,lr):
     return torch.optim.Adam(param, lr,maximize= True)
@@ -100,14 +108,14 @@ def init_optimiser(param,lr):
 
 # # Train
 def train_model(data_loader, model, Ens, num_epochs,optimizer,s_name,pf):
-    comm = MPI.COMM_WORLD
+    # comm = MPI.COMM_WORLD
     
-    if (comm.Get_rank() == 0):
-        avg_like = []
-        avg_mse = []
-        avg_rmse = []
-        avg_smape = []
-        avg_nis = []
+    # if (comm.Get_rank() == 0):
+    avg_like = []
+    avg_mse = []
+    avg_rmse = []
+    avg_smape = []
+    avg_nis = []
 
     # # # # # torch.autograd.set_detect_anomaly(True)
 
@@ -118,7 +126,8 @@ def train_model(data_loader, model, Ens, num_epochs,optimizer,s_name,pf):
     # # # Begin training
     for ix_epoch in range(num_epochs):
 
-        if (comm.Get_rank() == 0) and (ix_epoch % 50 ==0 or ix_epoch == num_epochs) or (ix_epoch == 1) or (ix_epoch == 2) or (ix_epoch == 3) or (ix_epoch == 4) or (ix_epoch == 5):
+        # if (comm.Get_rank() == 0) and 
+        if (ix_epoch % 50 ==0 or ix_epoch == num_epochs) or (ix_epoch == 1) or (ix_epoch == 2) or (ix_epoch == 3) or (ix_epoch == 4) or (ix_epoch == 5):
             tic = time.perf_counter()
         
         model.train()
@@ -132,11 +141,12 @@ def train_model(data_loader, model, Ens, num_epochs,optimizer,s_name,pf):
             
         #Init EnKF
         bs = data_loader.batch_size
-        n = model.F.weight_hh_l0.shape[-1] #number of features found through lstm dimensions
+        n = model.F.layers[0].cell.hidden_size #number of hidden cells
         
-        comm = MPI.COMM_WORLD  
+        # comm = MPI.COMM_WORLD  
         
-        if (comm.Get_rank() == 0) and (ix_epoch % 50 ==0 or ix_epoch == num_epochs):
+        # if (comm.Get_rank() == 0) and 
+        if(ix_epoch % 50 ==0 or ix_epoch == num_epochs):
             print(f"Epoch {ix_epoch}\n---------")
             sys.stdout.flush()
             
@@ -149,37 +159,34 @@ def train_model(data_loader, model, Ens, num_epochs,optimizer,s_name,pf):
         N = Ens # Divided by each MPI process
     
         # generate params based on LSTM hidden units which are the state of the LSTM
-        state_init = model.generate_param(n,bs,model.F.num_layers,N) 
-        
+        state_init = model.generate_param(n,bs,len(model.F.layers),N) 
+
         if pf:
             (uhi_init,w_init) = state_init
             uhi = uhi_init.clone()
             w = w_init.clone()
         else:
-            uhi_init = state_init
-            uhi = uhi_init.clone()
+            state = state_init.clone()
 
         
         for s, (X, y) in enumerate(data_loader):
-
-            # Synchronise each run
-            comm.Barrier()
             
+            # Synchronise each run
+            # comm.Barrier()
             # We set the EnKF as variables within the loop as we want the .bacwards() graph to start for each loop 
             #https://discuss.pytorch.org/t/runtimeerror-trying-to-backward-through-the-graph-a-second-time-but-the-buffers-have-already-been-freed-specify-retain-graph-true-when-calling-backward-the-first-time/6795/3
             #https://jdhao.github.io/2017/11/12/pytorch-computation-graph/
-            
-            if pf:
-                state = (V(uhi),V(w))
-            else:
-                state = V(uhi)
 
+            if pf:
+                state = ( torch.tensor(uhi, requires_grad = True),torch.tensor(w, requires_grad = True))
+            else:
+                state = torch.tensor(state, requires_grad = True)   
             
             # input(enkf_state[1])
             ''' Handle the batch size changes at the last batch of the PyTorch loaders ''' 
             if bs > X.shape[0]:
                 state = model.gaussian_samp(state, n, N, bs = X.shape[0]) # create a gaussian ens based on ens distribution
-                
+
             elif bs< X.shape[0]: #Return to original ensembles
                 state = model.gaussian_samp(state, n, N, bs = X.shape[0]) 
                 
@@ -188,8 +195,6 @@ def train_model(data_loader, model, Ens, num_epochs,optimizer,s_name,pf):
 
             if pf:
                 (uhi,w) = state
-            else:
-                uhi = state
                 
             
             #Gradients
@@ -198,36 +203,38 @@ def train_model(data_loader, model, Ens, num_epochs,optimizer,s_name,pf):
             # # # ### sync gradients through ranks
             # comm.Barrier()
             
-            sync_grads(model)
+            # sync_grads(model)
             
-            comm.Barrier()
+            # comm.Barrier()
 
             optimizer.step()
-
-            optimizer.zero_grad()#clean grad
-        
-            # losses to compare with baselines
-            mse,rmse,smape = loss_fun(out.detach(), y.detach())
             
-            if comm.Get_rank() == 0:
-                # Total metrics
-                total_likelihood += likelihood.detach().item() 
-                total_mse += mse.item() 
-                total_rmse += rmse.item() 
-                total_smape += smape.item() 
-                total_nis +=nis.detach().item()
+            optimizer.zero_grad()#clean grad
+            
+            # losses to compare with baselines
+            mse,rmse,smape = loss_fun(out.squeeze(-1).detach(), y.detach())
+            
+            # if comm.Get_rank() == 0:
+            # Total metrics
+            total_likelihood += likelihood.detach().item() 
+            total_mse += mse.item() 
+            total_rmse += rmse.item() 
+            total_smape += smape.item() 
+            total_nis +=nis.detach().item()
                 
             # Plot data assimilation of the filter
-            if (ix_epoch % 50 ==0 or ix_epoch == num_epochs) and comm.Get_rank() == 0:
+            if (ix_epoch % 50 ==0 or ix_epoch == num_epochs): #and comm.Get_rank() == 0:
                 try:
                     if s == 0:
-                        plts = out.detach().tolist()
-                        err = torch.diag(cov.detach()).tolist() # batch size >1
+                        plts = out.squeeze(-1).detach().tolist() # squeezing m=1
+                        temp_covs = [torch.diagonal(diag).detach() for diag in cov] 
+                        err = torch.cat(temp_covs).tolist() # diagonal of covs
                         trplts = y.detach().tolist()
                     
                     else: # to plot all the data #elif s == 1: # to plot two batch iterations if the data are too many 
-                        plts = plts + out.detach().tolist()
-                        err =  err +torch.diag(cov.detach()).tolist()
+                        plts = plts + out.squeeze(-1).detach().tolist()
+                        temp_covs =[torch.diagonal(diag).detach() for diag in cov]
+                        err =  err + torch.cat(temp_covs).tolist()
                         trplts = trplts+ y.detach().tolist()
                         plt.figure(0)# Name figures to separate them from each other
                         fig = plt.errorbar(x=range(len(plts)), y=plts,yerr = np.array(err),color="b",label='pred')
@@ -245,59 +252,59 @@ def train_model(data_loader, model, Ens, num_epochs,optimizer,s_name,pf):
                         
                 except:
                     pass
-        if comm.Get_rank() == 0:
-            #Avg metrics
-            avg_likelihood = total_likelihood / num_batches
-            avg_batch_mse = total_mse / num_batches
-            avg_batch_rmse = total_rmse / num_batches
-            avg_batch_smape = total_smape / num_batches
-            avg_NIS = total_nis / num_batches
-            
-            if (ix_epoch % 50 ==0 or ix_epoch == num_epochs):
-                print('r_proposed: ',np.square(model.r.item())) #We print variance not sd 
-                print('q_proposed: ',np.square(model.q.item()))
-                print('e_proposed: ',np.square(model.e.item()))
-                
-                # print(f"Train total likelihood: {total_likelihood}")
-                print(f"Train avg mse: {avg_batch_mse}")
-                print(f"Train avg rmse: {avg_batch_rmse}")
-                print(f"Train avg sMAPE: {avg_batch_smape}")
-                print(f"Train avg likelihood: {avg_likelihood}")
-                print(f"Train avg nis: {avg_NIS}")
+        # if comm.Get_rank() == 0:
+        #Avg metrics
+        avg_likelihood = total_likelihood / num_batches
+        avg_batch_mse = total_mse / num_batches
+        avg_batch_rmse = total_rmse / num_batches
+        avg_batch_smape = total_smape / num_batches
+        avg_NIS = total_nis / num_batches
         
-            #save metrics
-            avg_like.append(avg_likelihood)
-            avg_mse.append(avg_batch_mse)
-            avg_rmse.append(avg_batch_rmse)
-            avg_smape.append(avg_batch_smape)
-            avg_nis.append(avg_NIS)
-            # if we encounter a NaN stop 
-            if np.isnan(avg_like[-1]):
-                break
-               
-            else:
-                # Used save the last non-nan model
-                torch.save(model.state_dict(), f'{s_name}/nan_previous_model.pt')
+        if (ix_epoch % 50 ==0 or ix_epoch == num_epochs):
+            print('r_proposed: ',np.square(model.r.item())) #We print variance not sd 
+            print('q_proposed: ',np.square(model.q.item()))
+            print('e_proposed: ',np.square(model.e.item()))
             
-            # Save the best (max log-likelihood) model
-            if avg_like[-1] > best_like:
-                best_like  = avg_like[-1] 
-                # print('saving model...')
-                sys.stdout.flush()
-                torch.save(model.state_dict(), f'{s_name}/best_trainlikelihood_model.pt')
-        
-            # print()
-            if (ix_epoch % 50 ==0 or ix_epoch == num_epochs) or (ix_epoch == 1) or (ix_epoch == 2) or (ix_epoch == 3) or (ix_epoch == 4) or (ix_epoch == 5):
-                toc = time.perf_counter()
-                print(f"{toc - tic:0.2f} seconds")
-                sys.stdout.flush()
-            
-                
-            plot(avg_like,s_name,'Avg Likelihood')
-            plot(avg_mse,s_name,'Avg MSE')
-            plot(avg_rmse,s_name,'Avg RMSE')
-            plot(avg_smape,s_name,'Avg sMAPE')
-            plot(avg_nis,s_name,'Avg NIS')
+            # print(f"Train total likelihood: {total_likelihood}")
+            print(f"Train avg mse: {avg_batch_mse}")
+            print(f"Train avg rmse: {avg_batch_rmse}")
+            print(f"Train avg sMAPE: {avg_batch_smape}")
+            print(f"Train avg likelihood: {avg_likelihood}")
+            print(f"Train avg nis: {avg_NIS}")
+    
+        #save metrics
+        avg_like.append(avg_likelihood)
+        avg_mse.append(avg_batch_mse)
+        avg_rmse.append(avg_batch_rmse)
+        avg_smape.append(avg_batch_smape)
+        avg_nis.append(avg_NIS)
+        # if we encounter a NaN stop 
+        if np.isnan(avg_like[-1]):
+            break
            
-        comm.Barrier()
+        else:
+            # Used save the last non-nan model
+            torch.save(model.state_dict(), f'{s_name}/nan_previous_model.pt')
+        
+        # Save the best (max log-likelihood) model
+        if avg_like[-1] > best_like:
+            best_like  = avg_like[-1] 
+            # print('saving model...')
+            sys.stdout.flush()
+            torch.save(model.state_dict(), f'{s_name}/best_trainlikelihood_model.pt')
+    
+        # print()
+        if (ix_epoch % 50 ==0 or ix_epoch == num_epochs) or (ix_epoch == 1) or (ix_epoch == 2) or (ix_epoch == 3) or (ix_epoch == 4) or (ix_epoch == 5):
+            toc = time.perf_counter()
+            print(f"{toc - tic:0.2f} seconds")
+            sys.stdout.flush()
+        
+            
+        plot(avg_like,s_name,'Avg Likelihood')
+        plot(avg_mse,s_name,'Avg MSE')
+        plot(avg_rmse,s_name,'Avg RMSE')
+        plot(avg_smape,s_name,'Avg sMAPE')
+        plot(avg_nis,s_name,'Avg NIS')
+           
+        # comm.Barrier()
         
