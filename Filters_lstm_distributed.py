@@ -48,8 +48,6 @@ import plotly.express as px
 from Prep_data import get_dataloaders
 
 
-
-
 from Train import init_optimiser,train_model
 from Test import test_model,predict
 
@@ -58,11 +56,11 @@ parser = argparse.ArgumentParser('ADEnKF_LSTM')
 
 parser.add_argument('-f',metavar='-Filter', default='EnKF') # EnKF, PF
 
-parser.add_argument('-dataset', default='Pollution')# nasdaq100_padding, Pollution, NA_1990_2002_Monthly
-parser.add_argument('-t',metavar='-target', default='pollution') # NDX, pollution, TMP
+parser.add_argument('-dataset', default='nasdaq100_padding')# nasdaq100_padding, Pollution, NA_1990_2002_Monthly
+parser.add_argument('-t',metavar='-target', default='NDX') # NDX, pollution, TMP
 parser.add_argument('-fraction', type=int, default=100)
-parser.add_argument('-bs', type=int, metavar='-batch-size',default=48) # 60 (minutes), 24 (hours), 12 (months)
-parser.add_argument('-sequence-length', type=int, default=36) # 12 (minutes), 6 (hours), 3 (months)
+parser.add_argument('-bs', type=int, metavar='-batch-size',default=60) # 60 (minutes), 24 (hours), 12 (months)
+parser.add_argument('-sequence-length', type=int, default=12) # 12 (minutes), 6 (hours), 3 (months)
 
 parser.add_argument('-ms', type=float, metavar='-missing-values',default=False)
 parser.add_argument('-aff', type=float, metavar='-affected-missing-data',default=0.0)
@@ -70,11 +68,11 @@ parser.add_argument('-block', type=float, metavar='-percentage-of-missing-data',
 
 parser.add_argument('-feature_fraction', type=int, default=1)
 parser.add_argument('-lead', type=int, default=1)
-parser.add_argument('-epochs', type=int, metavar='-num-epochs', default=50)
+parser.add_argument('-epochs', type=int, metavar='-num-epochs', default=2)
 parser.add_argument('-lr', metavar='-learning-rate',type=float, default=1e-3)
 
 parser.add_argument('-nhu', type=int, metavar='-num-hidden-units' ,default=64)
-parser.add_argument('-layers', type=int, metavar='-LSTM-layers' ,default=2)
+parser.add_argument('-layers', type=int, metavar='-LSTM-layers' ,default=1)
 
 parser.add_argument('-d', type=float, metavar='-dropout',default=0.0)
 
@@ -158,7 +156,6 @@ if __name__ == '__main__': #????
     learning_rate =args.lr # 0.001
     
     optimizer = init_optimiser(model.parameters(),learning_rate)
-    
 
     # Send everything needed in the other MPI proceses
     # sendbuf = (train_loader,model,optimizer,savefile) #models F/H need to be removed at somepoint but they are hardcoded for now
@@ -189,7 +186,15 @@ if __name__ == '__main__': #????
     print('Train:',args.train)
     sys.stdout.flush()
     
-    train_model(train_loader, model, Ens, num_epochs, optimizer, savefile,pf)
+    mean = dataset.get('target_mean')
+    stdev = dataset.get('target_stdev')
+    
+    if args.dataset == 'Pollution':
+        pos = True
+    else: 
+        pos = False
+    
+    train_model(train_loader, model, Ens, num_epochs, optimizer, savefile,pf, mean, stdev, pos)
     
     # elif not args.train:
     # # # Test and predict with the best model/ only using one process for now need to think a bit before implementing in distributed
@@ -220,9 +225,9 @@ if __name__ == '__main__': #????
     mean = dataset.get('target_mean')
     stdev = dataset.get('target_stdev')
     
-    test_model(train_loader, model, Ens,args.mc,pf)
-    test_model(eval_loader, model, Ens,args.mc,pf)
-    
+    # test_model(train_loader, model, Ens,args.mc,pf,mean, stdev, pos)
+    # test_model(eval_loader, model, Ens,args.mc,pf,mean, stdev, pos)
+
     K = 1 # MC prediction
     if target == 'pollution':
         pos=True
@@ -231,11 +236,11 @@ if __name__ == '__main__': #????
     # # Evaluation
     for i in range(K):
         if i == 0 :
-            total_train_pred,total_train_cov = predict(train_loader, Ens, model,mean,stdev,pos)
-            total_val_pred,total_val_cov = predict(eval_loader, Ens, model,mean,stdev,pos)  
+            total_train_pred,total_train_cov = predict(train_loader, Ens, pf,model,mean,stdev,pos)
+            total_val_pred,total_val_cov = predict(eval_loader, Ens, pf, model,mean,stdev,pos)  
         else:
-            train_pred,train_cov  = predict(train_loader, Ens ,model,mean,stdev,pos)
-            val_pred,val_cov = predict(eval_loader, Ens ,model,mean,stdev,pos)
+            train_pred,train_cov  = predict(train_loader, Ens, pf,model,mean,stdev,pos)
+            val_pred,val_cov = predict(eval_loader, Ens, pf, model,mean,stdev,pos)
               
             total_train_pred += train_pred
             total_val_pred +=val_pred
@@ -267,6 +272,15 @@ if __name__ == '__main__': #????
     
     df_out.to_csv(f'{savefile}/Predictions.csv')
     
+    if pos:
+        lower_sd = df_out[ystar_col_std]
+       
+        lower_sd = lower_sd.where(df_out[ystar_col] - lower_sd > 0, other=df_out[ystar_col]) # if mean- sd < 0 sd is limited at 0
+
+    else:
+        lower_sd =  df_out[ystar_col_std]
+
+    
     # Figures
     pio.templates.default = "plotly_white"
     
@@ -280,11 +294,22 @@ if __name__ == '__main__': #????
     fig = go.Figure(data=go.Scatter(
             x=df_out.index,
             y = df_out[ystar_col],
+            
+            # error_y=dict(
+            #     type='data', # value of error bar given in data coordinates
+            #     array=df_out[ystar_col_std],
+            #     visible=True)
+            
             error_y=dict(
-                type='data', # value of error bar given in data coordinates
-                array=df_out[ystar_col_std],
-                visible=True),
-            name="Prediction"
+            type='data',
+            symmetric=False,
+            array=df_out[ystar_col_std],
+            arrayminus= lower_sd)
+            
+            ,
+            name="Model forecast",
+            marker_color = '#1f77b4'
+            
         )   )
     
     if args.t == 'NDX':
@@ -296,8 +321,10 @@ if __name__ == '__main__': #????
     elif args.t == 'TMP':
         y_axis = 'Temperature'
         x_axis = 'Months'
-        
-    fig.add_trace(go.Scatter(x=df_out.index,y=df_out[target],name="Ground truth"))
+    
+    # df_out = pd.read_csv(f'{savefile}/Predictions.csv') # For direct visualisations
+    
+    fig.add_trace(go.Scatter(x=df_out.index,y=df_out[target],name="Ground truth",marker_color= '#ff7f0e'))
     fig.add_vline(x=df_train.index[-1], line_width=4, line_dash="dash")
     fig.update_layout(
       template=plot_template, legend=dict(orientation='h', y=1.02, title_text=""), xaxis_title= x_axis, yaxis_title=args.t
@@ -308,11 +335,12 @@ if __name__ == '__main__': #????
     # With Predictions only
     df_out_mean =df_out.drop('Model forecast std',axis=1) 
     
-    fig = px.line(df_out_mean, labels={'value': args.t, 'created_at': 'Date'})
+    fig = px.line(df_out_mean['Model forecast'], labels={'value': args.t, 'created_at': 'Date'})
+    fig.add_traces(go.Scatter(x=df_out_mean.index,y=df_out_mean[target], name="Ground truth", mode='lines'))
     fig.add_vline(x=df_train.index[-1], line_width=4, line_dash="dash")
     fig.add_annotation(xref="paper", x=0.75, yref="paper", y=0.8, text="Test set start", showarrow=False)
     fig.update_layout(
-      template=plot_template, legend=dict(orientation='h', y=1.02, title_text="")
+      template=plot_template, legend=dict(orientation='h', y=1.02, title_text=""), xaxis_title= x_axis, yaxis_title=args.t
     )
     fig.write_html(f'{savefile}/line.html')
     
