@@ -119,15 +119,16 @@ class ModelH(nn.Module):
         self.hidden_units = hidden_units
         self.output = target
         # linear layer
-        self.H = nn.Linear(in_features=self.hidden_units, out_features=len([target]),dtype=torch.double).requires_grad_(False)
+        # self.H = nn.Linear(in_features=self.hidden_units, out_features=self.output,dtype=torch.double).requires_grad_(False)
         
+        # cell_weight = (torch.Tensor([range(1,(self.hidden_units+1))])/self.hidden_units).T
         #linear Identity matrix
-        # self.H = torch.eye(n = self.hidden_units,m = len([target]),requires_grad = False).double()
-        
+        # self.H = torch.Tensor(cell_weight,requires_grad = False).double() 
+        # self.H[-1] = torch.tensor([1.0])
     # Instead of linear layer, utilise lstm output
     
     def forward(self,x):
-        
+       
         # Use the last layer
         x = x[-1]
         
@@ -135,8 +136,9 @@ class ModelH(nn.Module):
         bs, n, N = x.shape
         x_reshaped = x.permute(0, 2, 1).reshape(-1, n)  # Shape: (batch_size * N, hidden_units)
         
+        # ad-hoc solution for one output
         # Apply the linear transformation
-        out_reshaped = self.H(x_reshaped)  # Shape: (batch_size * N, target_length)
+        out_reshaped = x_reshaped[:,-1]# @ self.H# Shape: (batch_size * N, target_length)
         
         # Reshape back to original batch and N dimensions
         out = out_reshaped.view(bs, -1, N) # Shape: (batch_size, target_length, N)
@@ -147,5 +149,6 @@ def get_models(features, target, hidden_size, layers, dropout = 0.0):
     first_layer_args = [LSTMCell, len(features), hidden_size]
     rest_layers_args = [LSTMCell, hidden_size, hidden_size]
     slstm = StackedLSTM(num_layers=layers, layer=LSTMLayer, first_layer_args = first_layer_args, rest_layers_args=rest_layers_args).double()
-    return slstm, ModelH(target = len(target),hidden_units=hidden_size)
+    
+    return slstm, ModelH(target = len([target]),hidden_units=hidden_size)
 

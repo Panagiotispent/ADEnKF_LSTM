@@ -56,11 +56,11 @@ parser = argparse.ArgumentParser('ADEnKF_LSTM')
 
 parser.add_argument('-f',metavar='-Filter', default='EnKF') # EnKF, PF
 
-parser.add_argument('-dataset', default='nasdaq100_padding')# nasdaq100_padding, Pollution, NA_1990_2002_Monthly
-parser.add_argument('-t',metavar='-target', default='NDX') # NDX, pollution, TMP
+parser.add_argument('-dataset', default='Pollution')# nasdaq100_padding, Pollution, NA_1990_2002_Monthly
+parser.add_argument('-t',metavar='-target', default='pollution') # NDX, pollution, TMP
 parser.add_argument('-fraction', type=int, default=100)
-parser.add_argument('-bs', type=int, metavar='-batch-size',default=60) # 60 (minutes), 24 (hours), 12 (months)
-parser.add_argument('-sequence-length', type=int, default=12) # 12 (minutes), 6 (hours), 3 (months)
+parser.add_argument('-bs', type=int, metavar='-batch-size',default=24) # 60 (minutes), 24 (hours), 12 (months)
+parser.add_argument('-sequence-length', type=int, default=6) # 12 (minutes), 6 (hours), 3 (months)
 
 parser.add_argument('-ms', type=float, metavar='-missing-values',default=False)
 parser.add_argument('-aff', type=float, metavar='-affected-missing-data',default=0.0)
@@ -68,7 +68,7 @@ parser.add_argument('-block', type=float, metavar='-percentage-of-missing-data',
 
 parser.add_argument('-feature_fraction', type=int, default=1)
 parser.add_argument('-lead', type=int, default=1)
-parser.add_argument('-epochs', type=int, metavar='-num-epochs', default=2)
+parser.add_argument('-epochs', type=int, metavar='-num-epochs', default=40)
 parser.add_argument('-lr', metavar='-learning-rate',type=float, default=1e-3)
 
 parser.add_argument('-nhu', type=int, metavar='-num-hidden-units' ,default=64)
@@ -130,8 +130,8 @@ if __name__ == '__main__': #????
     if not os.path.exists(f'{savefile}/img'):
         os.makedirs(f'{savefile}/img')
     
-    train_loader = DataLoader(dataset.get('train_dataset'), batch_size=batch_size, shuffle=False) # Do not shuffle a time series
-    eval_loader = DataLoader(dataset.get('eval_dataset'), batch_size=batch_size, shuffle=False)
+    train_loader = DataLoader(dataset.get('train_dataset'), batch_size=1, shuffle=False) # Do not shuffle a time series
+    eval_loader = DataLoader(dataset.get('eval_dataset'), batch_size=1, shuffle=False)
     
     X, Y = next(iter(train_loader))
     print("Features shape:", X.shape)
@@ -194,8 +194,8 @@ if __name__ == '__main__': #????
     else: 
         pos = False
     
-    train_model(train_loader, model, Ens, num_epochs, optimizer, savefile,pf, mean, stdev, pos)
-    
+    # train_model(train_loader, model, Ens, num_epochs, optimizer, savefile,pf, mean, stdev, pos)
+
     # elif not args.train:
     # # # Test and predict with the best model/ only using one process for now need to think a bit before implementing in distributed
     # if comm.Get_rank() == 0:
@@ -205,7 +205,7 @@ if __name__ == '__main__': #????
     # print('loading best model...')
     state = torch.load(f'{savefile}/best_trainlikelihood_model.pt') ### OR best_trainlikelihood_model_
     model.load_state_dict(state)
-    
+
     print('r_proposed: ',np.square(model.r.item())) # print variance
     print('q_proposed: ',np.square(model.q.item()))
     print('e_proposed: ',np.square(model.e.item()))
@@ -225,8 +225,8 @@ if __name__ == '__main__': #????
     mean = dataset.get('target_mean')
     stdev = dataset.get('target_stdev')
     
-    # test_model(train_loader, model, Ens,args.mc,pf,mean, stdev, pos)
-    # test_model(eval_loader, model, Ens,args.mc,pf,mean, stdev, pos)
+    test_model(train_loader, model, Ens,args.mc,pf,mean, stdev, pos)
+    test_model(eval_loader, model, Ens,args.mc,pf,mean, stdev, pos)
 
     K = 1 # MC prediction
     if target == 'pollution':
@@ -274,9 +274,7 @@ if __name__ == '__main__': #????
     
     if pos:
         lower_sd = df_out[ystar_col_std]
-       
         lower_sd = lower_sd.where(df_out[ystar_col] - lower_sd > 0, other=df_out[ystar_col]) # if mean- sd < 0 sd is limited at 0
-
     else:
         lower_sd =  df_out[ystar_col_std]
 
