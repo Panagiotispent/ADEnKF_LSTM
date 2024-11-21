@@ -56,7 +56,15 @@ def plot(x,s_name,name):
         pass
  
 
-def batched_SMAPE(A, F):
+def batched_SMAPE(A, F, mean_target, st_target, pos):
+    
+    # Unnormilise
+    A = A * st_target + mean_target
+    F = F * st_target + mean_target
+    
+    if pos: # If pollution dataset
+        A = np.exp(A)-5
+        F = np.exp(F)-5
     # Calculate absolute differences
     abs_diff = torch.abs(F - A)
     
@@ -64,16 +72,20 @@ def batched_SMAPE(A, F):
     abs_sum = torch.abs(A) + torch.abs(F)
     
     # Calculate SMAPE
-    smape = 2 / A.size(0) * torch.mean(abs_diff / abs_sum)
-    
+    smape =  100 * torch.mean((abs_diff / abs_sum))
+
+    # Handle no information of the target
+    if (F <=0.5).any():
+        smape = torch.zeros([1]) 
+
     return smape
 
 
-def loss_fun(pred,ground):
+def loss_fun(pred,ground, mean_target, st_target, pos):
     # Loss function for comparing
     mse = nn.MSELoss()
     rmse= torch.sqrt((mse(pred, ground)))
-    smape = batched_SMAPE(pred,ground)
+    smape = batched_SMAPE(pred,ground, mean_target, st_target, pos)
     return mse(pred,ground) ,rmse, smape
 
 
@@ -107,7 +119,7 @@ def init_optimiser(param,lr):
 
 
 # # Train
-def train_model(data_loader, model, Ens, num_epochs,optimizer,s_name,pf):
+def train_model(data_loader, model, Ens, num_epochs,optimizer,s_name,pf, mean_target, st_target, pos):
     # comm = MPI.COMM_WORLD
     
     # if (comm.Get_rank() == 0):
@@ -181,14 +193,13 @@ def train_model(data_loader, model, Ens, num_epochs,optimizer,s_name,pf):
                 state = ( torch.tensor(uhi, requires_grad = True),torch.tensor(w, requires_grad = True))
             else:
                 state = torch.tensor(state, requires_grad = True)   
-            
+                
             # input(enkf_state[1])
             ''' Handle the batch size changes at the last batch of the PyTorch loaders ''' 
-            if bs > X.shape[0]:
-                state = model.gaussian_samp(state, n, N, bs = X.shape[0]) # create a gaussian ens based on ens distribution
-
-            elif bs< X.shape[0]: #Return to original ensembles
-                state = model.gaussian_samp(state, n, N, bs = X.shape[0]) 
+            if bs > X.shape[0] and pf:
+                state = ( torch.tensor(uhi[:,-X.shape[0]:], requires_grad = True),torch.tensor(w[-X.shape[0]:], requires_grad = True))
+            elif bs > X.shape[0] and not pf:
+                state = torch.tensor(state[:,-X.shape[0]:], requires_grad = True)
                 
             # Run an AD-EnKF iteration 
             out, cov ,state, likelihood, nis = model(X,y,state,train)
@@ -212,7 +223,7 @@ def train_model(data_loader, model, Ens, num_epochs,optimizer,s_name,pf):
             optimizer.zero_grad()#clean grad
             
             # losses to compare with baselines
-            mse,rmse,smape = loss_fun(out.squeeze(-1).detach(), y.detach())
+            mse,rmse,smape = loss_fun(out.squeeze(-1).detach(), y.detach(), mean_target, st_target, pos)
             
             # if comm.Get_rank() == 0:
             # Total metrics

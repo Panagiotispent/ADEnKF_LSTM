@@ -57,7 +57,7 @@ parser.add_argument('-block', type=float, metavar='-percentage-of-missing-data',
 
 parser.add_argument('-feature_fraction', type=int, default=1)
 parser.add_argument('-lead', type=int, default=1)
-parser.add_argument('-epochs', type=int, metavar='-num-epochs', default=2)
+parser.add_argument('-epochs', type=int, metavar='-num-epochs', default=50)
 parser.add_argument('-lr', metavar='-learning-rate',type=float, default=1e-3)
 
 parser.add_argument('-nhu', type=int, metavar='-num-hidden-units' ,default=64)
@@ -148,16 +148,7 @@ def train_model(data_loader, model, loss_function, optimizer):
     print(f"Train loss: {avg_loss}")
 
 
-
-def batched_SMAPE(A, F, mean_target, st_target, pos):
-    
-    # Unnormilise
-    A = A * st_target + mean_target
-    F = F * st_target + mean_target
-    
-    if pos: # If pollution dataset
-        A = np.exp(A)-5
-        F = np.exp(F)-5
+def batched_SMAPE(A, F):
     # Calculate absolute differences
     abs_diff = torch.abs(F - A)
     
@@ -165,24 +156,19 @@ def batched_SMAPE(A, F, mean_target, st_target, pos):
     abs_sum = torch.abs(A) + torch.abs(F)
     
     # Calculate SMAPE
-    smape =  100 * torch.mean((abs_diff / abs_sum))
-
-    # Handle no information of the target
-    if (F <=0.5).any():
-        smape = torch.zeros([1]) 
-
+    smape = 2 / A.size(0) * torch.mean(abs_diff / abs_sum)
+    
     return smape
 
-
-def loss_fun(pred,ground, mean_target, st_target, pos):
+def loss_fun(pred,ground):
     # Loss function for comparing
     mse = nn.MSELoss()
-    rmse= torch.sqrt((mse(pred, ground)))
-    smape = batched_SMAPE(pred,ground, mean_target, st_target, pos)
+    rmse= torch.sqrt(mse(pred, ground))
+    smape = batched_SMAPE(pred,ground)
     return mse(pred,ground) ,rmse, smape
     
 
-def test_model(data_loader, model, loss_function,mean_target, st_target, pos,vis = True):
+def test_model(data_loader, model, loss_function,vis = True):
 
     num_batches = len(data_loader)
     total_loss = 0
@@ -212,7 +198,7 @@ def test_model(data_loader, model, loss_function,mean_target, st_target, pos,vis
             # print(model)
             output, (h_t,c_t) = model(X,h_t,c_t)
             # print(output.shape)
-            mse,rmse,smape = loss_fun(output, y,mean_target, st_target, pos)
+            mse,rmse,smape = loss_fun(output, y)
             
             total_mse += mse.item()
             total_rmse += rmse.item()
@@ -225,6 +211,7 @@ def test_model(data_loader, model, loss_function,mean_target, st_target, pos,vis
         print(f"Test MSE: {avg_mse:.3f}")
         print(f"Test RMSE: {avg_rmse:.3f}")
         print(f"Test sMAPE: {avg_smape:.3f}")
+
     return avg_mse
 
 
@@ -313,41 +300,33 @@ if __name__ == '__main__': #????
     print('Train:',args.train)
     sys.stdout.flush()
     
-    mean_target = dataset.get('target_mean')
-    st_target = dataset.get('target_stdev')
-    
-    if args.dataset == 'Pollution':
-        pos = True
-    else: 
-        pos = False
     
     print("Untrained test\n--------")
-    test_model(eval_loader, lstm, loss_function,mean_target, st_target, pos)
+    test_model(eval_loader, lstm, loss_function)
     print()
 
     avg_test_loss = []
-    best_loss = 10000 # test_model(eval_loader, lstm, loss_function,mean_target, st_target, pos) #untrained model
-    # torch.save(lstm.state_dict(), f'{savefile}/best_trainlikelihood_model.pt')
+    best_loss = test_model(eval_loader, lstm, loss_function) #untrained model
     for ix_epoch in range(num_epochs):
         print(f"Epoch {ix_epoch}\n---------")
         train_model(train_loader, lstm, loss_function, optimizer=optimizer)
-        avg_test_loss.append(test_model(eval_loader, lstm, loss_function ,mean_target, st_target, pos,False))
+        avg_test_loss.append(test_model(eval_loader, lstm, loss_function,False))
         
         if np.isnan(avg_test_loss[-1]):
             break
           
         else:
-            # Used save the last non-nan model
-            torch.save(lstm.state_dict(), f'{savefile}/nan_previous_model.pt')
+           # Used save the last non-nan model
+           torch.save(lstm.state_dict(), f'{savefile}/nan_previous_model.pt')
        
-        # Save the best model
-        if avg_test_loss[-1] < best_loss:
+        # Save the best (max log-likelihood) model
+        if avg_test_loss[-1] > best_loss:
             best_loss  = avg_test_loss[-1] 
-            print('saving model...')
+            # print('saving model...')
             sys.stdout.flush()
             torch.save(lstm.state_dict(), f'{savefile}/best_trainlikelihood_model.pt')
 
-    # # Evaluation
+    # Evaluation
 
     #Load the best model's parameters from training
     print('loading best model...')
@@ -356,17 +335,18 @@ if __name__ == '__main__': #????
     
     # ### Non batched versions of the normalised dataloaders
     # ### NECESSARY sequential testing for lstm????
-    train_loader = DataLoader(dataset.get('train_dataset'), batch_size=1, shuffle=False) # Do not shuffle a time series
-    eval_loader = DataLoader(dataset.get('eval_dataset'), batch_size=1, shuffle=False)
+    train_loader = DataLoader(dataset.get('train_dataset'), batch_size=batch_size, shuffle=False) # Do not shuffle a time series
+    eval_loader = DataLoader(dataset.get('eval_dataset'), batch_size=batch_size, shuffle=False)
     
     print('Train loss')
-    test_model(train_loader, lstm, loss_function,mean_target, st_target, pos)
+    test_model(train_loader, lstm, loss_function)
     print('Test loss')
-    test_model(eval_loader, lstm, loss_function,mean_target, st_target, pos)
+    test_model(eval_loader, lstm, loss_function)
         
     ystar_col = "Model forecast"
     mean = dataset.get('target_mean')
     stdev = dataset.get('target_stdev')
+    K = 1 # MC prediction
 
     # # Evaluation
     
@@ -385,7 +365,7 @@ if __name__ == '__main__': #????
     df_out = df_out.reset_index(drop=True)
     
     # unnormalise target for plotting
-    df_out = df_out * stdev + mean
+    df_out = df_out * dataset.get('target_stdev') + dataset.get('target_mean')
     
     # Transform the pollution target   # Note no need to change the scale of the variance as they are in the original scale
     if args.dataset == 'Pollution':
@@ -422,3 +402,385 @@ if __name__ == '__main__': #????
       template=plot_template, legend=dict(orientation='h', y=1.02, title_text="")
     )
     fig.write_html(f'{savefile}/Prediction.html')
+    
+    
+'''    
+    
+
+import pandas as pd
+dff = pd.read_csv('./Data/nasdaq100_padding.csv')
+
+
+df= dff[['AMZN','TSLA','NVDA','GOOGL','FB','NDX']] # working with one stock for now
+
+df = df[:len(df)//200]
+volume = str(len(df))
+
+df.head()
+
+
+features = list(df.columns) # (df.drop('pollution',axis=1).columns)#drop pollution to feed into the enkf
+
+forecast_lead = 1
+target = f"close_lead_{forecast_lead}"
+
+df[target] = df['NDX'].shift(-forecast_lead)
+df = df.iloc[:-forecast_lead]
+
+
+
+# ## Create a hold-out test set and preprocess the data
+
+
+
+
+cut = (int(len(df.index)*0.2))
+
+test_start = df.index[-cut]
+
+df_train = df.loc[:test_start].copy()
+df_eval = df.loc[test_start:].copy()
+
+
+
+
+print("Test set fraction:", len(df_eval) / len(df))
+
+
+# ## Standardize the features and target, based on the training set
+
+
+
+
+normalised_df=(df-df.min())/(df.max()-df.min())
+maximum = df['NDX'].max()
+minimum = df['NDX'].min()
+df = normalised_df
+
+# target_mean = df[target].mean()
+# target_stdev = df[target].std()
+
+#drop pollution to feed into the enkf
+# df = df.drop('pollution',axis = 1)
+
+# for c in df.columns:
+#     mean = df[c].mean()
+#     stdev = df[c].std()
+
+#     df[c] = (df[c] - mean) / stdev
+
+df = df.fillna(0) 
+
+df_train = df.loc[:test_start].copy()
+df_eval = df.loc[test_start:].copy()
+
+# ## Create datasets that PyTorch `DataLoader` can work with
+
+import torch
+from torch.utils.data import Dataset
+
+class SequenceDataset(Dataset):
+    def __init__(self, dataframe, target, features, sequence_length=5):
+        self.features = features
+        self.target = target
+        self.sequence_length = sequence_length
+        self.y = torch.tensor(dataframe[self.target].values).float()
+        self.X = torch.tensor(dataframe[self.features].values).float()
+
+    def __len__(self):
+        return self.X.shape[0]
+
+    def __getitem__(self, i): 
+        if i >= self.sequence_length - 1:
+            i_start = i - self.sequence_length + 1
+            x = self.X[i_start:(i + 1), :]
+        else:
+            padding = self.X[0].repeat(self.sequence_length - i - 1, 1)
+            x = self.X[0:(i + 1), :]
+            x = torch.cat((padding, x), 0)
+
+        return x, self.y[i]
+
+
+
+from torch.utils.data import DataLoader
+
+# torch.manual_seed(101)
+
+batch_size = 32 # see a month's data
+sequence_length = 4 # use a week to predict
+
+train_dataset = SequenceDataset(
+    df_train,
+    target=target,
+    features=features,
+    sequence_length=sequence_length
+)
+eval_dataset = SequenceDataset(
+    df_eval,
+    target=target,
+    features=features,
+    sequence_length=sequence_length
+)
+
+
+
+train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=False)
+eval_loader = DataLoader(eval_dataset, batch_size=batch_size, shuffle=False)
+
+X, Y = next(iter(train_loader))
+
+print("Features shape:", X.shape)
+print("Target shape:", Y.shape)
+
+
+# # The model and learning algorithm
+
+
+
+
+from torch import nn
+from torch.nn import Parameter
+from torch import Tensor
+from typing import Tuple
+import math
+
+
+class ShallowRegressionLSTM(nn.Module):
+    def __init__(self, features, hidden_units):
+        super().__init__()
+        self.features = features  # this is the number of features
+        self.hidden_units = hidden_units
+        self.num_layers = 1
+
+        self.lstm = nn.LSTM(
+            input_size=features,
+            hidden_size=hidden_units,
+            batch_first=True,
+            num_layers=self.num_layers
+        )
+
+        self.linear = nn.Linear(in_features=self.hidden_units, out_features=1)
+
+    def forward(self, x):
+        batch_size = x.shape[0]
+        h0 = torch.zeros(self.num_layers, batch_size, self.hidden_units).requires_grad_()
+        c0 = torch.zeros(self.num_layers, batch_size, self.hidden_units).requires_grad_()
+        
+        _, (hn, _) = self.lstm(x, (h0, c0))
+        out = self.linear(hn[0]).flatten()  # First dim of Hn is num_layers, which is set to 1 above.
+
+        return out,(hn,_)
+
+
+num_hidden_units = 32
+
+model = ShallowRegressionLSTM(features=len(features),hidden_units=num_hidden_units)
+
+from torchsummary import summary
+summary(model)
+
+learning_rate = 1e-3 # 0.001
+
+loss_function = nn.MSELoss()
+optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+
+
+# using this because I got multiple versions of openmp on my program 
+import os
+os.environ["KMP_DUPLICATE_LIB_OK"]="TRUE"
+
+import matplotlib.pyplot as plt
+def plot_grad_flow(named_parameters):
+    ave_grads = []
+    layers = []
+    for n, p in named_parameters:
+        if(p.requires_grad) and ("bias" not in n):
+            layers.append(n)
+            ave_grads.append(p.grad.abs().mean())
+    plt.plot(ave_grads, alpha=0.3, color="b")
+    plt.hlines(0, 0, len(ave_grads)+1, linewidth=1, color="k" )
+    plt.xticks(range(0,len(ave_grads), 1), layers, rotation="vertical")
+    plt.xlim(xmin=0, xmax=len(ave_grads))
+    plt.xlabel("Layers")
+    plt.ylabel("average gradient")
+    plt.title("Gradient flow")
+    plt.grid(True)
+
+
+
+# # Train
+def train_model(data_loader, model, loss_function, optimizer):
+    num_batches = len(data_loader)
+    total_loss = 0
+    model.train()
+    
+    for X, y in data_loader:
+        # print('ground ',y)
+        output,_ = model(X)
+        # print('OUT: ',output)
+        loss = loss_function(output, y)
+        # print(loss)
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+        
+        total_loss += loss.item()
+        plot_grad_flow(model.named_parameters())
+        
+    avg_loss = total_loss / num_batches
+    print(f"Train loss: {avg_loss}")
+
+def test_model(data_loader, model, loss_function):
+
+    num_batches = len(data_loader)
+    total_loss = 0
+
+    model.eval()
+    with torch.no_grad():
+        for X, y in data_loader:
+            # print(model)
+            output,_ = model(X)
+            # print(output.shape)
+            total_loss += loss_function(output, y).item()
+
+    avg_loss = total_loss / num_batches
+    print(f"Test loss: {avg_loss}")
+    return avg_loss
+
+print("Untrained test\n--------")
+test_model(eval_loader, model, loss_function)
+print()
+
+num_epochs = 2000
+
+avg_test_loss = []
+best_loss = test_model(eval_loader, model, loss_function) #untrained model
+for ix_epoch in range(num_epochs):
+    print(f"Epoch {ix_epoch}\n---------")
+    train_model(train_loader, model, loss_function, optimizer=optimizer)
+    avg_test_loss.append(test_model(eval_loader, model, loss_function))
+    
+    #save model based on evaluation loss
+    if avg_test_loss[-1] < best_loss:
+        best_loss  = avg_test_loss[-1] 
+        print('saving model...')
+        torch.save(model.state_dict(), 'bestmodel_lstm_'+volume+'.pt')
+    print()
+
+# Evaluation
+
+#Load the best model's parameters from training
+print('loading best model...')
+state = torch.load('bestmodel_lstm_'+volume+'.pt')
+model.load_state_dict(state)
+
+def predict(data_loader, model):
+    """Just like `test_loop` function but keep track of the outputs instead of the loss
+    function.
+    """
+    output = torch.tensor([])
+    model.eval()
+    with torch.no_grad():
+        for X, _ in data_loader:
+            y_star,_ = model(X)
+            output = torch.cat((output, y_star), 0)
+    return output
+
+
+
+
+### Non batched versions of the dataloaders? would be better to have the batched? at least for evaluation to evaluated the same vars as the trained
+train_loader = DataLoader(train_dataset)#, batch_size=batch_size, shuffle=False)
+eval_loader = DataLoader(eval_dataset)
+
+
+ystar_col = "Model forecast"
+df_train[ystar_col] = predict(train_loader, model).numpy()
+df_eval[ystar_col] = predict(eval_loader, model).numpy()
+
+
+
+df_out = pd.concat((df_train, df_eval))[[target, ystar_col]]
+
+# for c in df_out.columns:
+#     df_out[c] = df_out[c] * target_stdev + target_mean
+#un - min-max
+unnormalised_df= (df_out * (maximum - minimum)) + minimum
+
+df_out = unnormalised_df
+print(df_out)
+
+import plotly.express as px
+import plotly.graph_objects as go
+import plotly.io as pio
+pio.templates.default = "plotly_white"
+
+plot_template = dict(
+    layout=go.Layout({
+        "font_size": 18,
+        "xaxis_title_font_size": 24,
+        "yaxis_title_font_size": 24})
+)
+
+
+fig = px.line(df_out, labels={'value': "pollution", 'created_at': 'Date'})
+fig.add_vline(x=test_start, line_width=4, line_dash="dash")
+fig.add_annotation(xref="paper", x=0.75, yref="paper", y=0.8, text="Test set start", showarrow=False)
+fig.update_layout(
+  template=plot_template, legend=dict(orientation='h', y=1.02, title_text="")
+)
+fig.show()
+fig.write_html("NASDAQlstm.html")
+
+
+
+#predict on uknown
+
+# df_test = pd.read_csv('./pollution_test_data1.csv')
+
+# # df_test['wind_dir'] = df_test["wnd_dir"].apply(wind_encode)
+# df_test = df_test.drop(["wnd_dir"], axis=1)
+
+# df_test[target] = df_test['pollution'].shift(-forecast_lead)
+# df_test = df_test.iloc[:-forecast_lead]
+
+
+# target_mean = df_test[target].mean()
+# target_stdev = df_test[target].std()
+
+
+# for c in df_out.columns:
+#     df_out[c] = df_out[c] * target_stdev + target_mean
+
+# print(df_out)
+
+# test_dataset = SequenceDataset(
+#     df_test,
+#     target=target,
+#     features=features,
+#     sequence_length=sequence_length
+# )
+
+# test_loader = DataLoader(test_dataset)
+
+# test_model(test_loader, model, loss_function)
+
+
+# df_test[ystar_col] = predict(test_loader, model).numpy()
+
+
+# df_test = df_test[[target, ystar_col]]
+
+# for c in df_test.columns:
+#     df_test[c] = df_test[c] * target_stdev + target_mean
+
+
+# fig = px.line(df_test[[target,ystar_col]], labels={'value': "pollution", 'created_at': 'Date'})
+# fig.update_layout(
+#   template=plot_template, legend=dict(orientation='h', y=1.02, title_text="")
+# )
+# fig.show()
+# fig.write_html("pollution_testlstm.html")
+
+'''

@@ -96,39 +96,6 @@ class EnKF_LSTM(nn.Module):
         state = uhi
         return state
     
-    ''' Initialise Ensembles '''
-    def gaussian_samp(self, uhi, n, N, bs):
-        # Consider the last bs data for the flexible distribution
-        ubi = uhi[:, -bs:]
-        
-        # For the last batch specifying different dimensions
-        ls, bs, n, N = ubi.shape
-        
-        # Compute the mean of the ensemble
-        uh = torch.mean(ubi, dim=-1)
-        
-        # Initialize covariance matrix from updated ensemble
-        Bh = torch.zeros([ls, bs, n, n]).double()
-        for l in range(ls):
-            for b in range(bs):
-                Bh[l, b] = torch.cov(ubi[l, b])# + 1e-6 * torch.eye(n)
-        
-        # Generate Gaussian ensembles with reparameterization trick for AD
-        uhi = torch.zeros(ls, bs, n, N).double()
-        for i in range(N):
-            for l in range(ls):  # Need this as we have varying Ensemble size from bs
-                for b in range(bs):
-                    # Constrained covariance, Cholesky decomposition, and jitter
-                    try:
-                        L = torch.linalg.cholesky(Bh[l, b] + (torch.Tensor([1e-6]) * torch.eye(n)).double())
-                    except:
-                        L += (torch.Tensor([1e-4]) * torch.eye(n)).double()
-                    uhi[l, b, :, i] = (uh[l, b] + (L @ torch.randn(n).double())).double()
-    
-        state = uhi
-        
-        return state
-    
     # def NEES(self, uhi, measurement_model, y = None):
     #     ls,bs,n,N = uhi.shape
         
@@ -261,19 +228,6 @@ class EnKF_LSTM(nn.Module):
         return Y_mu, cov
        
     
-    def close_psd(self,cov):
-        # Perform eigendecomposition
-        eigenvalues, eigenvectors = torch.linalg.eigh(cov)
-        
-        # Set negative eigenvalues to a small positive value
-        eigenvalues = torch.clamp(eigenvalues, min=1e-5)
-        
-        # Reconstruct the matrix
-        psd_matrix = eigenvectors @ torch.diag_embed(eigenvalues) @ eigenvectors.transpose(-2, -1)
-        
-        return psd_matrix
-
-    
     # Likelihood
     def likelihood(self,y,Y_mu,sig,measurement_model): # Per batch of measurements
         bs, m = Y_mu.shape
@@ -288,7 +242,9 @@ class EnKF_LSTM(nn.Module):
             L = torch.linalg.cholesky(sig)
         except RuntimeError:
             # Handling non-positive definite covariance matrix
-            sig = self.close_psd(sig)
+            # Adding small jitter to diagonal elements to make it positive definite
+            jitter =  1e-4 * torch.eye(m).unsqueeze(0)
+            sig += jitter
             
             L = torch.linalg.cholesky(sig)
     
@@ -438,3 +394,8 @@ def Init_model(features, target, num_hidden_units = 32, layers=2, dropout=0.2, r
     return model    
         
         
+    
+    
+    
+    
+    

@@ -7,15 +7,7 @@ Created on Mon Dec  4 09:52:34 2023
 
 import torch
 from torch import nn
-import numbers
-import warnings
-from collections import namedtuple
-from typing import List, Tuple
 
-import torch
-import torch.jit as jit
-import torch.nn as nn
-from torch import Tensor
 from torch.nn import Parameter
 
 class LSTMCell(nn.Module):
@@ -125,7 +117,7 @@ class ModelH(nn.Module):
         self.hidden_units = hidden_units
         self.output = target
         # linear layer
-        # self.H = nn.Linear(in_features=self.hidden_units, out_features=1,dtype=torch.double)
+        # self.H = nn.Linear(in_features=self.hidden_units, out_features=self.output,dtype=torch.double).requires_grad_(False)
         
         #linear Identity matrix
         # self.H = torch.eye(n = self.hidden_units,m = len([target]),requires_grad = False).double()
@@ -133,12 +125,25 @@ class ModelH(nn.Module):
     # Instead of linear layer, utilise lstm output
     
     def forward(self,x):
-        # return last layer last cell prediction
-        return x[-1,:,-1]
+        
+        # Use the last layer
+        x = x[-1]
+        
+        # Reshape x to merge batch_size and N dimensions for a single matrix multiplication
+        bs, n, N = x.shape
+        x_reshaped = x.permute(0, 2, 1).reshape(-1, n)  # Shape: (batch_size * N, hidden_units)
+        
+        # Apply the linear transformation
+        out_reshaped = x_reshaped[:,-1] #self.H(x_reshaped)  # Shape: (batch_size * N, target_length)
+        
+        # Reshape back to original batch and N dimensions
+        out = out_reshaped.view(bs, -1, N) # Shape: (batch_size, target_length, N)
+
+        return out
         
 def get_models(features, target, hidden_size, layers, dropout = 0.0):    
     first_layer_args = [LSTMCell, len(features), hidden_size]
     rest_layers_args = [LSTMCell, hidden_size, hidden_size]
     slstm = StackedLSTM(num_layers=layers, layer=LSTMLayer, first_layer_args = first_layer_args, rest_layers_args=rest_layers_args).double()
-    return slstm, ModelH(target = len(target),hidden_units=hidden_size)
+    return slstm, ModelH(target = len([target]),hidden_units=hidden_size)
 
