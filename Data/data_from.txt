@@ -1,0 +1,5 @@
+nasdaq100: https://cseweb.ucsd.edu/~yaq007/NASDAQ100_stock_data.html
+
+polluition: https://www.kaggle.com/datasets/rupakroy/lstm-datasets-multivariate-univariate/data
+
+NA-1990-2002-Monthly: https://viterbi-web.usc.edu/~liu32/data.html
