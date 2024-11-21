@@ -47,9 +47,9 @@ parser.add_argument('-f',metavar='-Filter', default='LSTM') # EnKF, PF
 
 parser.add_argument('-dataset', default='Pollution')# nasdaq100_padding, Pollution, NA_1990_2002_Monthly
 parser.add_argument('-t',metavar='-target', default='pollution') # NDX, pollution, TMP
-parser.add_argument('-fraction', type=int, default=10)
-parser.add_argument('-bs', type=int, metavar='-batch-size',default=24) # 60 (minutes), 24 (hours), 12 (months)
-parser.add_argument('-sequence-length', type=int, default= 6) # 12 (minutes), 6 (hours), 3 (months)
+parser.add_argument('-fraction', type=int, default=100)
+parser.add_argument('-bs', type=int, metavar='-batch-size',default=48) # 60 (minutes), 24 (hours), 12 (months)
+parser.add_argument('-sequence-length', type=int, default=36) # 12 (minutes), 6 (hours), 3 (months)
 
 parser.add_argument('-ms', type=float, metavar='-missing-values',default=False)
 parser.add_argument('-aff', type=float, metavar='-affected-missing-data',default=0.0)
@@ -57,11 +57,11 @@ parser.add_argument('-block', type=float, metavar='-percentage-of-missing-data',
 
 parser.add_argument('-feature_fraction', type=int, default=1)
 parser.add_argument('-lead', type=int, default=1)
-parser.add_argument('-epochs', type=int, metavar='-num-epochs', default=500)
+parser.add_argument('-epochs', type=int, metavar='-num-epochs', default=2)
 parser.add_argument('-lr', metavar='-learning-rate',type=float, default=1e-3)
 
-parser.add_argument('-nhu', type=int, metavar='-num-hidden-units' ,default=32)
-parser.add_argument('-layers', type=int, metavar='-LSTM-layers' ,default=1)
+parser.add_argument('-nhu', type=int, metavar='-num-hidden-units' ,default=64)
+parser.add_argument('-layers', type=int, metavar='-LSTM-layers' ,default=2)
 
 parser.add_argument('-d', type=float, metavar='-dropout',default=0.0)
 
@@ -154,24 +154,21 @@ def batched_SMAPE(A, F, mean_target, st_target, pos):
     # Unnormilise
     A = A * st_target + mean_target
     F = F * st_target + mean_target
-
-    if pos: # If pollution dataset   
-        A = np.exp(A) -5
-        F = np.exp(F) -5
     
+    if pos: # If pollution dataset
+        A = np.exp(A)-5
+        F = np.exp(F)-5
     # Calculate absolute differences
     abs_diff = torch.abs(F - A)
-
     
-
     # Calculate absolute sum
-    abs_sum = torch.abs(A) + torch.abs(F) # adding a small drift to handle targets = 0.0 for the smape
-   
+    abs_sum = torch.abs(A) + torch.abs(F)
+    
     # Calculate SMAPE
     smape =  100 * torch.mean((abs_diff / abs_sum))
 
-    #Handle no information target
-    if (F <=1).any():
+    # Handle no information of the target
+    if (F <=0.5).any():
         smape = torch.zeros([1]) 
 
     return smape
@@ -214,17 +211,16 @@ def test_model(data_loader, model, loss_function,mean_target, st_target, pos,vis
             
             # print(model)
             output, (h_t,c_t) = model(X,h_t,c_t)
-            
+            # print(output.shape)
             mse,rmse,smape = loss_fun(output, y,mean_target, st_target, pos)
-
+            
             total_mse += mse.item()
             total_rmse += rmse.item()
             total_smape += smape.item()
-
         avg_mse = total_mse / num_batches
         avg_rmse = total_rmse / num_batches
         avg_smape = total_smape / num_batches
-
+    
     if vis:
         print(f"Test MSE: {avg_mse:.3f}")
         print(f"Test RMSE: {avg_rmse:.3f}")
@@ -299,7 +295,9 @@ if __name__ == '__main__': #????
 
     num_hidden_units = args.nhu
     num_layers = args.layers
-
+    
+    
+    
     lstm = StackedLSTM(len(dataset.get('features')), num_hidden_units,num_layers)
     # Optimiser lr 
     learning_rate =args.lr # 0.001
@@ -328,8 +326,8 @@ if __name__ == '__main__': #????
     print()
 
     avg_test_loss = []
-    best_loss = test_model(eval_loader, lstm, loss_function,mean_target, st_target, pos) #untrained model
-    torch.save(lstm.state_dict(), f'{savefile}/best_trainlikelihood_model.pt')
+    best_loss = 10000 # test_model(eval_loader, lstm, loss_function,mean_target, st_target, pos) #untrained model
+    # torch.save(lstm.state_dict(), f'{savefile}/best_trainlikelihood_model.pt')
     for ix_epoch in range(num_epochs):
         print(f"Epoch {ix_epoch}\n---------")
         train_model(train_loader, lstm, loss_function, optimizer=optimizer)
@@ -341,7 +339,7 @@ if __name__ == '__main__': #????
         else:
             # Used save the last non-nan model
             torch.save(lstm.state_dict(), f'{savefile}/nan_previous_model.pt')
-        
+       
         # Save the best model
         if avg_test_loss[-1] < best_loss:
             best_loss  = avg_test_loss[-1] 
@@ -361,8 +359,8 @@ if __name__ == '__main__': #????
     train_loader = DataLoader(dataset.get('train_dataset'), batch_size=1, shuffle=False) # Do not shuffle a time series
     eval_loader = DataLoader(dataset.get('eval_dataset'), batch_size=1, shuffle=False)
     
-    # print('Train loss')
-    # test_model(train_loader, lstm, loss_function,mean_target, st_target, pos)
+    print('Train loss')
+    test_model(train_loader, lstm, loss_function,mean_target, st_target, pos)
     print('Test loss')
     test_model(eval_loader, lstm, loss_function,mean_target, st_target, pos)
         
@@ -417,14 +415,10 @@ if __name__ == '__main__': #????
             "yaxis_title_font_size": 24})
     )
     
-    # df_out = pd.read_csv(f'{savefile}/Predictions.csv') # For direct visualisations
-
-    fig = px.line(df_out['Model forecast'], labels={'value': args.t, 'created_at': 'Date'})
-    fig.add_traces(go.Scatter(x=df_out.index,y=df_out[target], name="Ground truth", mode='lines'))
+    fig = px.line(df_out).update_layout(xaxis_title=x_axis,yaxis_title=y_axis)
     fig.add_vline(x=df_train.index[-1], line_width=4, line_dash="dash")
-    fig.add_annotation(xref="paper", x=0.75, yref="paper", y=0.8, text="Test set start", showarrow=False)
+    fig.add_annotation(xref="paper", x=0.75, yref="paper", y=0.8, showarrow=False)
     fig.update_layout(
-      template=plot_template, legend=dict(orientation='h', y=1.02, title_text=""), xaxis_title= x_axis, yaxis_title=args.t
+      template=plot_template, legend=dict(orientation='h', y=1.02, title_text="")
     )
-    fig.write_html(f'{savefile}/line.html')
     fig.write_html(f'{savefile}/Prediction.html')

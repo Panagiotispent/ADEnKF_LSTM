@@ -124,7 +124,7 @@ def get_dataloaders(Datafile,target,fraction = 1, feature_fraction = 1, forecast
     
     print("Test set fraction:", len(df_eval) / len(df))
     
-    # FIRST Constrain for negative normalised values of pollution and drift
+    # FIRST Constrain for negative normalised values of pollution
     if Datafile == './Data/Pollution.csv':
         df_train[target] = np.log(df_train[target]+5)
         df_eval[target] = np.log(df_eval[target]+5)

@@ -209,7 +209,7 @@ class PF_LSTM(nn.Module):
         ls,bs,n,N = uhi.shape
         # input(w)
         w = torch.log(w) # weights are log(1/N)=-log(N) is negative
-
+        
         # update weights based on innovation 
         new_w = torch.zeros(bs,N,dtype = torch.double) 
         # for i in range(N):
@@ -223,7 +223,7 @@ class PF_LSTM(nn.Module):
         new_w = w + self.w_likelihood(y, Y,W_mu,sig,w, measurement_model)
         # input(new_w)
             # w[i] = w[i] * self.TransitionH(measurement_model,ubi[:,:,:,i])
-
+        
             
         new_w += 1.e-300 # avoid round-off to zero
         new_w -= torch.log(sum(torch.exp(new_w))) # normalize with logsumexp
@@ -248,23 +248,19 @@ class PF_LSTM(nn.Module):
         # print(f'{new_w[:middle]}\n{new_w[middle:]}')
         # input(f'{self.neff(new_w[:middle])},{self.neff(new_w[middle:])}, {N/4}')
         
+        
         for b in range(bs):
             # Resample
             if self.neff(new_w[b,:middle]) < N/4:
                 # print('resample short')
-                try:
-                    new_uhi[:,b,:,:middle],new_w_res[b,:middle] = self.soft_resample(uhi[:,b,:,:middle],new_w[b,:middle])
-                except:
-                    new_uhi[:,b,:,:middle],new_w_res[b,:middle] = self.unif(uhi[:,b,:,:middle],new_w[b,:middle])
+                new_uhi[:,b,:,:middle],new_w_res[b,:middle] = self.soft_resample(uhi[:,b,:,:middle],new_w[b,:middle])
             if self.neff(new_w[b,middle:]) < N/4:
                 # print('resample long')
-                try:
-                    new_uhi[:,b,:,middle:],new_w_res[b,middle:] = self.soft_resample(uhi[:,b,:,middle:],new_w[b,middle:])
-                except:
-                    new_uhi[:,b,:,middle:],new_w_res[b,middle:] = self.unif(uhi[:,b,:,middle:],new_w[b,middle:])
+                new_uhi[:,b,:,middle:],new_w_res[b,middle:] = self.soft_resample(uhi[:,b,:,middle:],new_w[b,middle:])
+        
         
         new_w = new_w_res
-        # print(new_w[0])
+
         state = (new_uhi,new_w)
         
         return state
